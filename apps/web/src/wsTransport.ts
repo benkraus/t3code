@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { decodeUnknownJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 import { Result, Schema } from "effect";
+import { resolveWebSocketUrl } from "./serverConnection";
 
 type PushListener<C extends WsPushChannel> = (message: WsPushMessage<C>) => void;
 
@@ -64,15 +65,7 @@ export class WsTransport {
   private readonly url: string;
 
   constructor(url?: string) {
-    const bridgeUrl = window.desktopBridge?.getWsUrl();
-    const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
-    this.url =
-      url ??
-      (bridgeUrl && bridgeUrl.length > 0
-        ? bridgeUrl
-        : envUrl && envUrl.length > 0
-          ? envUrl
-          : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:${window.location.port}`);
+    this.url = url ?? resolveWebSocketUrl();
     this.connect();
   }
 

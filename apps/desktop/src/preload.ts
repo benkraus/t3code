@@ -12,12 +12,19 @@ const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 const GET_WS_URL_CHANNEL = "desktop:get-ws-url";
+const GET_CONNECTION_SETTINGS_CHANNEL = "desktop:get-connection-settings";
+const UPDATE_CONNECTION_SETTINGS_CHANNEL = "desktop:update-connection-settings";
+const SCAN_TAILSCALE_HOSTS_CHANNEL = "desktop:scan-tailscale-hosts";
 
 contextBridge.exposeInMainWorld("desktopBridge", {
   getWsUrl: () => {
     const result = ipcRenderer.sendSync(GET_WS_URL_CHANNEL);
     return typeof result === "string" ? result : null;
   },
+  getConnectionSettings: () => ipcRenderer.invoke(GET_CONNECTION_SETTINGS_CHANNEL),
+  updateConnectionSettings: (settings) =>
+    ipcRenderer.invoke(UPDATE_CONNECTION_SETTINGS_CHANNEL, settings),
+  scanTailscaleHosts: (port) => ipcRenderer.invoke(SCAN_TAILSCALE_HOSTS_CHANNEL, port),
   pickFolder: () => ipcRenderer.invoke(PICK_FOLDER_CHANNEL),
   confirm: (message) => ipcRenderer.invoke(CONFIRM_CHANNEL, message),
   setTheme: (theme) => ipcRenderer.invoke(SET_THEME_CHANNEL, theme),

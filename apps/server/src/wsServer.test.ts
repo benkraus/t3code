@@ -613,6 +613,35 @@ describe("WebSocket Server", () => {
     });
   });
 
+  it("serves discovery info for desktop host scans", async () => {
+    server = await createTestServer({ cwd: "/test/project" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/server-discovery`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      app: "t3code",
+      authEnabled: false,
+    });
+  });
+
+  it("reports websocket auth requirements in discovery info", async () => {
+    server = await createTestServer({ cwd: "/test/project", authToken: "secret-token" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/server-discovery`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      app: "t3code",
+      authEnabled: true,
+    });
+  });
+
   it("serves persisted attachments from stateDir", async () => {
     const baseDir = makeTempDir("t3code-state-attachments-");
     const { attachmentsDir } = deriveServerPathsSync(baseDir, undefined);

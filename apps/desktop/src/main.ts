@@ -18,6 +18,7 @@ import {
 import type { MenuItemConstructorOptions } from "electron";
 import * as Effect from "effect/Effect";
 import type {
+  DesktopConnectionSettings,
   DesktopTheme,
   DesktopUpdateActionResult,
   DesktopUpdateState,
@@ -27,8 +28,15 @@ import { autoUpdater } from "electron-updater";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { NetService } from "@t3tools/shared/Net";
 import { RotatingFileSink } from "@t3tools/shared/logging";
+import {
+  isRemoteDesktopConnection,
+  parseDesktopConnectionSettingsInput,
+  readDesktopConnectionSettings,
+  writeDesktopConnectionSettings,
+} from "./desktopConnection";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { syncShellEnvironment } from "./syncShellEnvironment";
+import { scanTailscaleHosts } from "./tailscaleDiscovery";
 import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./updateState";
 import {
   createInitialDesktopUpdateState,
@@ -57,6 +65,9 @@ const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 const GET_WS_URL_CHANNEL = "desktop:get-ws-url";
+const GET_CONNECTION_SETTINGS_CHANNEL = "desktop:get-connection-settings";
+const UPDATE_CONNECTION_SETTINGS_CHANNEL = "desktop:update-connection-settings";
+const SCAN_TAILSCALE_HOSTS_CHANNEL = "desktop:scan-tailscale-hosts";
 const BASE_DIR = process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), ".t3");
 const STATE_DIR = Path.join(BASE_DIR, "userdata");
 const DESKTOP_SCHEME = "t3";
@@ -92,6 +103,7 @@ let aboutCommitHashCache: string | null | undefined;
 let desktopLogSink: RotatingFileSink | null = null;
 let backendLogSink: RotatingFileSink | null = null;
 let restoreStdIoCapture: (() => void) | null = null;
+let desktopConnectionSettings: DesktopConnectionSettings = readDesktopConnectionSettings(STATE_DIR);
 
 let destructiveMenuIconCache: Electron.NativeImage | null | undefined;
 const desktopRuntimeInfo = resolveDesktopRuntimeInfo({
@@ -114,6 +126,10 @@ function sanitizeLogValue(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function isUsingRemoteDesktopConnection(): boolean {
+  return isRemoteDesktopConnection(desktopConnectionSettings);
+}
+
 function backendChildEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.T3CODE_PORT;
@@ -128,6 +144,10 @@ function backendChildEnv(): NodeJS.ProcessEnv {
 function writeDesktopLogHeader(message: string): void {
   if (!desktopLogSink) return;
   desktopLogSink.write(`[${logTimestamp()}] [${logScope("desktop")}] ${message}\n`);
+}
+
+function resolveLocalBackendWsUrl(port: number, authToken: string): string {
+  return `ws://127.0.0.1:${port}/?token=${encodeURIComponent(authToken)}`;
 }
 
 function writeBackendSessionBoundary(phase: "START" | "END", details: string): void {
@@ -931,7 +951,7 @@ function configureAutoUpdater(): void {
   updatePollTimer.unref();
 }
 function scheduleBackendRestart(reason: string): void {
-  if (isQuitting || restartTimer) return;
+  if (isQuitting || restartTimer || isUsingRemoteDesktopConnection()) return;
 
   const delayMs = Math.min(500 * 2 ** restartAttempt, 10_000);
   restartAttempt += 1;
@@ -943,8 +963,56 @@ function scheduleBackendRestart(reason: string): void {
   }, delayMs);
 }
 
+async function reserveLocalBackendEndpoint(): Promise<void> {
+  backendPort = await Effect.service(NetService).pipe(
+    Effect.flatMap((net) => net.reserveLoopbackPort()),
+    Effect.provide(NetService.layer),
+    Effect.runPromise,
+  );
+  backendAuthToken = Crypto.randomBytes(24).toString("hex");
+  backendWsUrl = resolveLocalBackendWsUrl(backendPort, backendAuthToken);
+  writeDesktopLogHeader(`reserved backend port via NetService port=${backendPort}`);
+  writeDesktopLogHeader(
+    `bootstrap resolved websocket endpoint baseUrl=ws://127.0.0.1:${backendPort}`,
+  );
+}
+
+async function applyDesktopConnectionSettings(
+  nextSettings: DesktopConnectionSettings,
+): Promise<void> {
+  const previouslyRemote = isUsingRemoteDesktopConnection();
+  desktopConnectionSettings = nextSettings;
+
+  if (isRemoteDesktopConnection(nextSettings)) {
+    await stopBackendAndWaitForExit();
+    backendPort = 0;
+    backendAuthToken = "";
+    backendWsUrl = nextSettings.remoteUrl;
+    writeDesktopLogHeader(
+      `desktop connection mode=remote wsUrl=${sanitizeLogValue(nextSettings.remoteUrl)}`,
+    );
+    return;
+  }
+
+  writeDesktopLogHeader("desktop connection mode=local");
+
+  if (
+    previouslyRemote ||
+    backendPort === 0 ||
+    backendAuthToken.length === 0 ||
+    backendWsUrl.length === 0
+  ) {
+    await stopBackendAndWaitForExit();
+    await reserveLocalBackendEndpoint();
+  }
+
+  if (!backendProcess) {
+    startBackend();
+  }
+}
+
 function startBackend(): void {
-  if (isQuitting || backendProcess) return;
+  if (isQuitting || backendProcess || isUsingRemoteDesktopConnection()) return;
 
   const backendEntry = resolveBackendEntry();
   if (!FS.existsSync(backendEntry)) {
@@ -1095,6 +1163,28 @@ function registerIpcHandlers(): void {
   ipcMain.removeAllListeners(GET_WS_URL_CHANNEL);
   ipcMain.on(GET_WS_URL_CHANNEL, (event) => {
     event.returnValue = backendWsUrl;
+  });
+
+  ipcMain.removeHandler(GET_CONNECTION_SETTINGS_CHANNEL);
+  ipcMain.handle(GET_CONNECTION_SETTINGS_CHANNEL, async () => desktopConnectionSettings);
+
+  ipcMain.removeHandler(UPDATE_CONNECTION_SETTINGS_CHANNEL);
+  ipcMain.handle(UPDATE_CONNECTION_SETTINGS_CHANNEL, async (_event, rawSettings: unknown) => {
+    const nextSettings = writeDesktopConnectionSettings(
+      STATE_DIR,
+      parseDesktopConnectionSettingsInput(rawSettings),
+    );
+    await applyDesktopConnectionSettings(nextSettings);
+    return desktopConnectionSettings;
+  });
+
+  ipcMain.removeHandler(SCAN_TAILSCALE_HOSTS_CHANNEL);
+  ipcMain.handle(SCAN_TAILSCALE_HOSTS_CHANNEL, async (_event, rawPort: unknown) => {
+    const port =
+      typeof rawPort === "number" && Number.isInteger(rawPort) && rawPort >= 1 && rawPort <= 65_535
+        ? rawPort
+        : undefined;
+    return scanTailscaleHosts(port === undefined ? undefined : { port });
   });
 
   ipcMain.removeHandler(PICK_FOLDER_CHANNEL);
@@ -1338,21 +1428,10 @@ configureAppIdentity();
 
 async function bootstrap(): Promise<void> {
   writeDesktopLogHeader("bootstrap start");
-  backendPort = await Effect.service(NetService).pipe(
-    Effect.flatMap((net) => net.reserveLoopbackPort()),
-    Effect.provide(NetService.layer),
-    Effect.runPromise,
-  );
-  writeDesktopLogHeader(`reserved backend port via NetService port=${backendPort}`);
-  backendAuthToken = Crypto.randomBytes(24).toString("hex");
-  const baseUrl = `ws://127.0.0.1:${backendPort}`;
-  backendWsUrl = `${baseUrl}/?token=${encodeURIComponent(backendAuthToken)}`;
-  writeDesktopLogHeader(`bootstrap resolved websocket endpoint baseUrl=${baseUrl}`);
-
   registerIpcHandlers();
   writeDesktopLogHeader("bootstrap ipc handlers registered");
-  startBackend();
-  writeDesktopLogHeader("bootstrap backend start requested");
+  await applyDesktopConnectionSettings(desktopConnectionSettings);
+  writeDesktopLogHeader("bootstrap connection settings applied");
   mainWindow = createWindow();
   writeDesktopLogHeader("bootstrap main window created");
 }

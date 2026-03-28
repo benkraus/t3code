@@ -19,6 +19,7 @@ import {
   ORCHESTRATION_WS_METHODS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   ProjectId,
+  type ServerDiscoveryInfo,
   ThreadId,
   WS_CHANNELS,
   WS_METHODS,
@@ -78,6 +79,8 @@ import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { expandHomePath } from "./os-jank.ts";
 import { makeServerPushBus } from "./wsServer/pushBus.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
+
+const SERVER_DISCOVERY_ROUTE = "/api/server-discovery";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 
 /**
@@ -437,6 +440,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     void runPromise(
       Effect.gen(function* () {
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+        if (url.pathname === SERVER_DISCOVERY_ROUTE) {
+          const payload: ServerDiscoveryInfo = {
+            app: "t3code",
+            authEnabled: Boolean(authToken),
+          };
+          respond(
+            200,
+            {
+              "Cache-Control": "no-store",
+              "Content-Type": "application/json; charset=utf-8",
+            },
+            JSON.stringify(payload),
+          );
+          return;
+        }
         if (tryHandleProjectFaviconRequest(url, res)) {
           return;
         }

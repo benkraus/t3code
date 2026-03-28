@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
+  type DesktopConnectionSettings,
+  type DesktopDiscoveredHost,
   PROVIDER_DISPLAY_NAMES,
   type ProviderKind,
   type ServerProvider,
@@ -76,6 +78,32 @@ const TIMESTAMP_FORMAT_LABELS = {
 } as const;
 
 const EMPTY_SERVER_PROVIDERS: ReadonlyArray<ServerProvider> = [];
+const DEFAULT_DESKTOP_CONNECTION_SETTINGS: DesktopConnectionSettings = {
+  mode: "local",
+  remoteUrl: "",
+};
+const REMOTE_URL_SCHEME_PATTERN = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//;
+
+function resolveTailscaleDiscoveryPort(rawUrl: string): number | undefined {
+  const trimmed = rawUrl.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+
+  const candidate = REMOTE_URL_SCHEME_PATTERN.test(trimmed) ? trimmed : `http://${trimmed}`;
+
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.port.length === 0) {
+      return undefined;
+    }
+
+    const port = Number(parsed.port);
+    return Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 type InstallProviderSettings = {
   provider: ProviderKind;
@@ -311,10 +339,66 @@ function SettingsRouteView() {
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>
   >({});
+  const [savedDesktopConnectionSettings, setSavedDesktopConnectionSettings] =
+    useState<DesktopConnectionSettings>(DEFAULT_DESKTOP_CONNECTION_SETTINGS);
+  const [draftDesktopConnectionSettings, setDraftDesktopConnectionSettings] =
+    useState<DesktopConnectionSettings>(DEFAULT_DESKTOP_CONNECTION_SETTINGS);
+  const [discoveredTailscaleHosts, setDiscoveredTailscaleHosts] = useState<
+    ReadonlyArray<DesktopDiscoveredHost>
+  >([]);
+  const [isLoadingDesktopConnectionSettings, setIsLoadingDesktopConnectionSettings] = useState(
+    () => isElectron,
+  );
+  const [isApplyingDesktopConnectionSettings, setIsApplyingDesktopConnectionSettings] =
+    useState(false);
+  const [isScanningTailscaleHosts, setIsScanningTailscaleHosts] = useState(false);
+  const [desktopConnectionError, setDesktopConnectionError] = useState<string | null>(null);
+  const [tailscaleDiscoveryError, setTailscaleDiscoveryError] = useState<string | null>(null);
+  const [hasScannedTailscaleHosts, setHasScannedTailscaleHosts] = useState(false);
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const refreshingRef = useRef(false);
   const queryClient = useQueryClient();
   useRelativeTimeTick();
+
+  useEffect(() => {
+    if (!isElectron) {
+      setIsLoadingDesktopConnectionSettings(false);
+      return;
+    }
+
+    const bridge = window.desktopBridge;
+    if (!bridge?.getConnectionSettings) {
+      setDesktopConnectionError("Desktop connection settings are unavailable.");
+      setIsLoadingDesktopConnectionSettings(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingDesktopConnectionSettings(true);
+    setDesktopConnectionError(null);
+
+    void bridge
+      .getConnectionSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setSavedDesktopConnectionSettings(settings);
+        setDraftDesktopConnectionSettings(settings);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setDesktopConnectionError(
+          error instanceof Error ? error.message : "Unable to load desktop connection settings.",
+        );
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setIsLoadingDesktopConnectionSettings(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const refreshProviders = useCallback(() => {
     if (refreshingRef.current) return;
@@ -379,6 +463,71 @@ function SettingsRouteView() {
     ...(isGitWritingModelDirty ? ["Git writing model"] : []),
     ...(areProviderSettingsDirty ? ["Providers"] : []),
   ];
+  const isDesktopConnectionDirty =
+    draftDesktopConnectionSettings.mode !== savedDesktopConnectionSettings.mode ||
+    draftDesktopConnectionSettings.remoteUrl !== savedDesktopConnectionSettings.remoteUrl;
+  const willReloadAfterDesktopConnectionSave =
+    draftDesktopConnectionSettings.mode !== savedDesktopConnectionSettings.mode ||
+    (draftDesktopConnectionSettings.mode === "remote" &&
+      draftDesktopConnectionSettings.remoteUrl !== savedDesktopConnectionSettings.remoteUrl);
+  const tailscaleDiscoveryPort = resolveTailscaleDiscoveryPort(
+    draftDesktopConnectionSettings.remoteUrl,
+  );
+
+  const applyDesktopConnectionSettings = useCallback(async () => {
+    const bridge = window.desktopBridge;
+    if (!bridge?.updateConnectionSettings) {
+      setDesktopConnectionError("Desktop connection settings are unavailable.");
+      return;
+    }
+
+    setIsApplyingDesktopConnectionSettings(true);
+    setDesktopConnectionError(null);
+
+    try {
+      const nextSettings = await bridge.updateConnectionSettings(draftDesktopConnectionSettings);
+      setSavedDesktopConnectionSettings(nextSettings);
+      setDraftDesktopConnectionSettings(nextSettings);
+
+      if (
+        nextSettings.mode !== savedDesktopConnectionSettings.mode ||
+        (nextSettings.mode === "remote" &&
+          nextSettings.remoteUrl !== savedDesktopConnectionSettings.remoteUrl)
+      ) {
+        window.location.reload();
+      }
+    } catch (error: unknown) {
+      setDesktopConnectionError(
+        error instanceof Error ? error.message : "Unable to update desktop connection settings.",
+      );
+    } finally {
+      setIsApplyingDesktopConnectionSettings(false);
+    }
+  }, [draftDesktopConnectionSettings, savedDesktopConnectionSettings]);
+
+  const scanTailscaleHosts = useCallback(async () => {
+    const bridge = window.desktopBridge;
+    if (!bridge?.scanTailscaleHosts) {
+      setTailscaleDiscoveryError("Tailscale scanning is unavailable in this desktop build.");
+      return;
+    }
+
+    setIsScanningTailscaleHosts(true);
+    setHasScannedTailscaleHosts(true);
+    setTailscaleDiscoveryError(null);
+
+    try {
+      const hosts = await bridge.scanTailscaleHosts(tailscaleDiscoveryPort);
+      setDiscoveredTailscaleHosts(hosts);
+    } catch (error: unknown) {
+      setDiscoveredTailscaleHosts([]);
+      setTailscaleDiscoveryError(
+        error instanceof Error ? error.message : "Unable to scan Tailscale hosts.",
+      );
+    } finally {
+      setIsScanningTailscaleHosts(false);
+    }
+  }, [tailscaleDiscoveryPort]);
 
   const openKeybindingsFile = useCallback(() => {
     if (!keybindingsConfigPath) return;
@@ -883,6 +1032,236 @@ function SettingsRouteView() {
                 }
               />
             </SettingsSection>
+
+            {isElectron ? (
+              <SettingsSection title="Connection">
+                <SettingsRow
+                  title="Desktop backend"
+                  description="Use the embedded local server or point this desktop shell at a remote T3 Code host."
+                  resetAction={
+                    draftDesktopConnectionSettings.mode !== "local" ||
+                    draftDesktopConnectionSettings.remoteUrl.length > 0 ? (
+                      <SettingResetButton
+                        label="desktop backend"
+                        onClick={() => {
+                          setDraftDesktopConnectionSettings(DEFAULT_DESKTOP_CONNECTION_SETTINGS);
+                          setDesktopConnectionError(null);
+                        }}
+                      />
+                    ) : null
+                  }
+                  status={
+                    <>
+                      <span className="block">
+                        {isLoadingDesktopConnectionSettings ? (
+                          "Loading desktop connection settings..."
+                        ) : savedDesktopConnectionSettings.mode === "remote" ? (
+                          <>
+                            Current remote endpoint:
+                            <span className="mt-1 block break-all font-mono text-[11px] text-foreground">
+                              {savedDesktopConnectionSettings.remoteUrl}
+                            </span>
+                          </>
+                        ) : (
+                          "Current endpoint: embedded local server on this machine."
+                        )}
+                      </span>
+                      <span className="mt-1 block">
+                        Accepts `ws://`, `wss://`, `http://`, or `https://`. Include `?token=...` if
+                        the server requires a WebSocket auth token.
+                      </span>
+                      {desktopConnectionError ? (
+                        <span className="mt-1 block text-destructive">
+                          {desktopConnectionError}
+                        </span>
+                      ) : null}
+                    </>
+                  }
+                  control={
+                    <Select
+                      value={draftDesktopConnectionSettings.mode}
+                      onValueChange={(value) => {
+                        if (value !== "local" && value !== "remote") return;
+                        setDraftDesktopConnectionSettings((existing) => ({
+                          ...existing,
+                          mode: value,
+                        }));
+                        setDesktopConnectionError(null);
+                      }}
+                    >
+                      <SelectTrigger
+                        className="w-full sm:w-40"
+                        aria-label="Desktop backend connection mode"
+                        disabled={
+                          isLoadingDesktopConnectionSettings || isApplyingDesktopConnectionSettings
+                        }
+                      >
+                        <SelectValue>
+                          {draftDesktopConnectionSettings.mode === "remote" ? "Remote" : "Local"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectPopup align="end" alignItemWithTrigger={false}>
+                        <SelectItem hideIndicator value="local">
+                          Local
+                        </SelectItem>
+                        <SelectItem hideIndicator value="remote">
+                          Remote
+                        </SelectItem>
+                      </SelectPopup>
+                    </Select>
+                  }
+                >
+                  <div className="mt-3 space-y-3 border-t border-border/60 pt-3">
+                    <label htmlFor="desktop-remote-host-url" className="block">
+                      <span className="text-xs font-medium text-foreground">Remote host URL</span>
+                      <Input
+                        id="desktop-remote-host-url"
+                        className="mt-1.5"
+                        value={draftDesktopConnectionSettings.remoteUrl}
+                        onChange={(event) => {
+                          setDraftDesktopConnectionSettings((existing) => ({
+                            ...existing,
+                            remoteUrl: event.target.value,
+                          }));
+                          if (desktopConnectionError) {
+                            setDesktopConnectionError(null);
+                          }
+                        }}
+                        placeholder="wss://host.example.com/?token=..."
+                        spellCheck={false}
+                        disabled={
+                          isLoadingDesktopConnectionSettings || isApplyingDesktopConnectionSettings
+                        }
+                      />
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        The desktop app uses this WebSocket endpoint for chat, git, terminal, and
+                        project APIs when remote mode is active.
+                      </span>
+                    </label>
+
+                    <div className="rounded-xl border border-border/60 bg-background/60 p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-medium text-foreground">
+                            Tailscale discovery
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Scan online peers for a T3 Code server on port{" "}
+                            <span className="font-mono">{tailscaleDiscoveryPort ?? 3773}</span>.
+                          </div>
+                        </div>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={
+                            isLoadingDesktopConnectionSettings ||
+                            isApplyingDesktopConnectionSettings ||
+                            isScanningTailscaleHosts
+                          }
+                          onClick={() => void scanTailscaleHosts()}
+                        >
+                          {isScanningTailscaleHosts ? (
+                            <>
+                              <LoaderIcon className="size-3.5 animate-spin" />
+                              Scanning...
+                            </>
+                          ) : (
+                            "Scan tailnet"
+                          )}
+                        </Button>
+                      </div>
+
+                      {tailscaleDiscoveryError ? (
+                        <p className="mt-2 text-xs text-destructive">{tailscaleDiscoveryError}</p>
+                      ) : null}
+
+                      {discoveredTailscaleHosts.length > 0 ? (
+                        <div className="mt-3 space-y-2">
+                          {discoveredTailscaleHosts.map((host) => (
+                            <div
+                              key={`${host.id}:${host.remoteUrl}`}
+                              className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/70 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+                            >
+                              <div className="min-w-0">
+                                <div className="text-xs font-medium text-foreground">
+                                  {host.name}
+                                </div>
+                                <div className="mt-0.5 break-all font-mono text-[11px] text-muted-foreground">
+                                  {host.remoteUrl}
+                                </div>
+                                <div className="mt-1 text-[11px] text-muted-foreground">
+                                  {host.dnsName ?? host.host}
+                                  {host.tailnetIp ? ` • ${host.tailnetIp}` : ""}
+                                  {host.os ? ` • ${host.os}` : ""}
+                                  {host.authEnabled ? " • token required" : " • no token required"}
+                                </div>
+                              </div>
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                className="shrink-0"
+                                onClick={() => {
+                                  setDraftDesktopConnectionSettings({
+                                    mode: "remote",
+                                    remoteUrl: host.remoteUrl,
+                                  });
+                                  setDesktopConnectionError(null);
+                                }}
+                              >
+                                Use host
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+
+                      {hasScannedTailscaleHosts &&
+                      !isScanningTailscaleHosts &&
+                      discoveredTailscaleHosts.length === 0 &&
+                      !tailscaleDiscoveryError ? (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          No online Tailscale peers answered the T3 Code discovery endpoint on port{" "}
+                          <span className="font-mono">{tailscaleDiscoveryPort ?? 3773}</span>.
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={
+                          isLoadingDesktopConnectionSettings ||
+                          isApplyingDesktopConnectionSettings ||
+                          !isDesktopConnectionDirty
+                        }
+                        onClick={() => {
+                          setDraftDesktopConnectionSettings(savedDesktopConnectionSettings);
+                          setDesktopConnectionError(null);
+                        }}
+                      >
+                        Revert
+                      </Button>
+                      <Button
+                        size="xs"
+                        disabled={
+                          isLoadingDesktopConnectionSettings ||
+                          isApplyingDesktopConnectionSettings ||
+                          !isDesktopConnectionDirty
+                        }
+                        onClick={() => void applyDesktopConnectionSettings()}
+                      >
+                        {isApplyingDesktopConnectionSettings
+                          ? "Applying..."
+                          : willReloadAfterDesktopConnectionSave
+                            ? "Apply and reload"
+                            : "Save"}
+                      </Button>
+                    </div>
+                  </div>
+                </SettingsRow>
+              </SettingsSection>
+            ) : null}
 
             <SettingsSection
               title="Providers"

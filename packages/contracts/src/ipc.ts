@@ -71,11 +71,28 @@ export type DesktopUpdateStatus =
 
 export type DesktopRuntimeArch = "arm64" | "x64" | "other";
 export type DesktopTheme = "light" | "dark" | "system";
+export type DesktopConnectionMode = "local" | "remote";
 
 export interface DesktopRuntimeInfo {
   hostArch: DesktopRuntimeArch;
   appArch: DesktopRuntimeArch;
   runningUnderArm64Translation: boolean;
+}
+
+export interface DesktopConnectionSettings {
+  mode: DesktopConnectionMode;
+  remoteUrl: string;
+}
+
+export interface DesktopDiscoveredHost {
+  id: string;
+  name: string;
+  host: string;
+  dnsName: string | null;
+  tailnetIp: string | null;
+  os: string | null;
+  remoteUrl: string;
+  authEnabled: boolean;
 }
 
 export interface DesktopUpdateState {
@@ -102,6 +119,11 @@ export interface DesktopUpdateActionResult {
 
 export interface DesktopBridge {
   getWsUrl: () => string | null;
+  getConnectionSettings: () => Promise<DesktopConnectionSettings>;
+  updateConnectionSettings: (
+    settings: DesktopConnectionSettings,
+  ) => Promise<DesktopConnectionSettings>;
+  scanTailscaleHosts: (port?: number) => Promise<DesktopDiscoveredHost[]>;
   pickFolder: () => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
