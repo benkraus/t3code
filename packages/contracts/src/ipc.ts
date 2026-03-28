@@ -90,6 +90,17 @@ export interface DesktopRuntimeInfo {
   runningUnderArm64Translation: boolean;
 }
 
+export interface DesktopDiscoveredHost {
+  id: string;
+  name: string;
+  host: string;
+  dnsName: string | null;
+  tailnetIp: string | null;
+  os: string | null;
+  remoteUrl: string;
+  authEnabled: boolean;
+}
+
 export interface DesktopUpdateState {
   enabled: boolean;
   status: DesktopUpdateStatus;
@@ -160,6 +171,7 @@ export interface DesktopBridge {
   removeSavedEnvironmentSecret: (environmentId: EnvironmentId) => Promise<void>;
   getServerExposureState: () => Promise<DesktopServerExposureState>;
   setServerExposureMode: (mode: DesktopServerExposureMode) => Promise<DesktopServerExposureState>;
+  scanTailscaleHosts: (port?: number) => Promise<DesktopDiscoveredHost[]>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;

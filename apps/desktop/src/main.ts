@@ -61,6 +61,7 @@ import { waitForBackendStartupReady } from "./backendStartupReadiness.ts";
 import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./updateState.ts";
 import { doesVersionMatchDesktopUpdateChannel } from "./updateChannels.ts";
 import { ServerListeningDetector } from "./serverListeningDetector.ts";
+import { scanTailscaleHosts } from "./tailscaleDiscovery.ts";
 import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
@@ -102,6 +103,7 @@ const SET_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:set-saved-environment-secr
 const REMOVE_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:remove-saved-environment-secret";
 const GET_SERVER_EXPOSURE_STATE_CHANNEL = "desktop:get-server-exposure-state";
 const SET_SERVER_EXPOSURE_MODE_CHANNEL = "desktop:set-server-exposure-mode";
+const SCAN_TAILSCALE_HOSTS_CHANNEL = "desktop:scan-tailscale-hosts";
 const BASE_DIR = process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), ".t3");
 const STATE_DIR = Path.join(BASE_DIR, "userdata");
 const DESKTOP_SETTINGS_PATH = Path.join(STATE_DIR, "desktop-settings.json");
@@ -1667,6 +1669,15 @@ function registerIpcHandlers(): void {
     });
     relaunchDesktopApp(`serverExposureMode=${nextMode}`);
     return nextState;
+  });
+
+  ipcMain.removeHandler(SCAN_TAILSCALE_HOSTS_CHANNEL);
+  ipcMain.handle(SCAN_TAILSCALE_HOSTS_CHANNEL, async (_event, rawPort: unknown) => {
+    const port =
+      typeof rawPort === "number" && Number.isInteger(rawPort) && rawPort >= 1 && rawPort <= 65_535
+        ? rawPort
+        : undefined;
+    return scanTailscaleHosts(port === undefined ? undefined : { port });
   });
 
   ipcMain.removeHandler(PICK_FOLDER_CHANNEL);

@@ -242,3 +242,9 @@ export const ServerProviderUpdatedPayload = Schema.Struct({
   providers: ServerProviders,
 });
 export type ServerProviderUpdatedPayload = typeof ServerProviderUpdatedPayload.Type;
+
+export const ServerDiscoveryInfo = Schema.Struct({
+  app: Schema.Literal("t3code"),
+  authEnabled: Schema.Boolean,
+});
+export type ServerDiscoveryInfo = typeof ServerDiscoveryInfo.Type;

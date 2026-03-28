@@ -10,6 +10,7 @@ import {
   HttpServerRequest,
 } from "effect/unstable/http";
 import { OtlpTracer } from "effect/unstable/observability";
+import type { ServerDiscoveryInfo } from "@t3tools/contracts";
 
 import {
   ATTACHMENTS_ROUTE_PREFIX,
@@ -28,6 +29,7 @@ import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 const PROJECT_FAVICON_CACHE_CONTROL = "public, max-age=3600";
 const FALLBACK_PROJECT_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#6b728080" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" data-fallback="project-favicon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/></svg>`;
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
+const SERVER_DISCOVERY_ROUTE = "/api/server-discovery";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
 
 export const browserApiCorsLayer = HttpRouter.cors({
@@ -66,6 +68,20 @@ export const serverEnvironmentRouteLayer = HttpRouter.add(
       Effect.flatMap((serverEnvironment) => serverEnvironment.getDescriptor),
     );
     return HttpServerResponse.jsonUnsafe(descriptor, { status: 200 });
+  }),
+);
+
+export const serverDiscoveryRouteLayer = HttpRouter.add(
+  "GET",
+  SERVER_DISCOVERY_ROUTE,
+  Effect.gen(function* () {
+    const serverAuth = yield* ServerAuth;
+    const auth = yield* serverAuth.getDescriptor();
+    const payload: ServerDiscoveryInfo = {
+      app: "t3code",
+      authEnabled: auth.policy !== "unsafe-no-auth",
+    };
+    return HttpServerResponse.jsonUnsafe(payload, { status: 200 });
   }),
 );
 

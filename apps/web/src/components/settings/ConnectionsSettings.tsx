@@ -1,8 +1,9 @@
-import { PlusIcon, QrCodeIcon } from "lucide-react";
+import { PlusIcon, QrCodeIcon, SearchIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   type AuthClientSession,
   type AuthPairingLink,
+  type DesktopDiscoveredHost,
   type DesktopServerExposureState,
   type EnvironmentId,
 } from "@t3tools/contracts";
@@ -252,6 +253,21 @@ function resolveDesktopPairingUrl(endpointUrl: string, credential: string): stri
 function resolveCurrentOriginPairingUrl(credential: string): string {
   const url = new URL("/pair", window.location.href);
   return setPairingTokenOnUrl(url, credential).toString();
+}
+
+function resolveTailscaleDiscoveryPort(rawHost: string): number | undefined {
+  const trimmedHost = rawHost.trim();
+  if (!trimmedHost) {
+    return undefined;
+  }
+
+  try {
+    const parsed = new URL(trimmedHost.includes("://") ? trimmedHost : `http://${trimmedHost}`);
+    const port = Number.parseInt(parsed.port, 10);
+    return Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 type PairingLinkListRowProps = {
@@ -801,6 +817,12 @@ export function ConnectionsSettings() {
   const [savedBackendHost, setSavedBackendHost] = useState("");
   const [savedBackendPairingCode, setSavedBackendPairingCode] = useState("");
   const [savedBackendError, setSavedBackendError] = useState<string | null>(null);
+  const [discoveredTailscaleHosts, setDiscoveredTailscaleHosts] = useState<
+    ReadonlyArray<DesktopDiscoveredHost>
+  >([]);
+  const [isScanningTailscaleHosts, setIsScanningTailscaleHosts] = useState(false);
+  const [tailscaleDiscoveryError, setTailscaleDiscoveryError] = useState<string | null>(null);
+  const [hasScannedTailscaleHosts, setHasScannedTailscaleHosts] = useState(false);
   const [isAddingSavedBackend, setIsAddingSavedBackend] = useState(false);
   const [reconnectingSavedEnvironmentId, setReconnectingSavedEnvironmentId] =
     useState<EnvironmentId | null>(null);
@@ -962,6 +984,42 @@ export function ConnectionsSettings() {
     savedBackendPairingCode,
     savedBackendPairingUrl,
   ]);
+
+  const handleScanTailscaleHosts = useCallback(async () => {
+    if (!desktopBridge?.scanTailscaleHosts) {
+      setTailscaleDiscoveryError("Tailscale scanning is unavailable in this desktop build.");
+      return;
+    }
+
+    setIsScanningTailscaleHosts(true);
+    setHasScannedTailscaleHosts(true);
+    setTailscaleDiscoveryError(null);
+    try {
+      const port = resolveTailscaleDiscoveryPort(
+        savedBackendMode === "host-code" ? savedBackendHost : savedBackendPairingUrl,
+      );
+      setDiscoveredTailscaleHosts(await desktopBridge.scanTailscaleHosts(port));
+    } catch (error) {
+      setDiscoveredTailscaleHosts([]);
+      setTailscaleDiscoveryError(
+        error instanceof Error ? error.message : "Unable to scan Tailscale hosts.",
+      );
+    } finally {
+      setIsScanningTailscaleHosts(false);
+    }
+  }, [desktopBridge, savedBackendHost, savedBackendMode, savedBackendPairingUrl]);
+
+  const handleSelectTailscaleHost = useCallback(
+    (host: DesktopDiscoveredHost) => {
+      setSavedBackendMode("host-code");
+      if (!savedBackendLabel.trim()) {
+        setSavedBackendLabel(host.name);
+      }
+      setSavedBackendHost(host.remoteUrl);
+      setSavedBackendError(null);
+    },
+    [savedBackendLabel],
+  );
 
   const handleReconnectSavedBackend = useCallback(async (environmentId: EnvironmentId) => {
     setReconnectingSavedEnvironmentId(environmentId);
@@ -1407,6 +1465,67 @@ export function ConnectionsSettings() {
                       </>
                     )}
                   </div>
+                  {desktopBridge?.scanTailscaleHosts ? (
+                    <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-foreground">Tailnet discovery</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            Find online T3 Code backends reachable over Tailscale.
+                          </p>
+                        </div>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={isAddingSavedBackend || isScanningTailscaleHosts}
+                          onClick={() => void handleScanTailscaleHosts()}
+                        >
+                          {isScanningTailscaleHosts ? (
+                            <Spinner className="size-3" />
+                          ) : (
+                            <SearchIcon className="size-3" />
+                          )}
+                          {isScanningTailscaleHosts ? "Scanning..." : "Scan"}
+                        </Button>
+                      </div>
+                      {tailscaleDiscoveryError ? (
+                        <p className="text-xs text-destructive">{tailscaleDiscoveryError}</p>
+                      ) : null}
+                      {discoveredTailscaleHosts.length > 0 ? (
+                        <div className="space-y-1">
+                          {discoveredTailscaleHosts.map((host) => (
+                            <button
+                              key={host.id}
+                              type="button"
+                              className="flex w-full items-center justify-between gap-3 rounded-md border border-border/60 bg-background px-3 py-2 text-left transition-colors hover:bg-muted"
+                              disabled={isAddingSavedBackend}
+                              onClick={() => handleSelectTailscaleHost(host)}
+                            >
+                              <span className="min-w-0">
+                                <span className="block truncate text-xs font-medium text-foreground">
+                                  {host.name}
+                                </span>
+                                <span className="block truncate text-[11px] text-muted-foreground">
+                                  {host.remoteUrl}
+                                  {host.tailnetIp ? ` · ${host.tailnetIp}` : ""}
+                                  {host.authEnabled ? " · pairing required" : ""}
+                                </span>
+                              </span>
+                              <span className="shrink-0 text-[11px] text-muted-foreground">
+                                Use
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : hasScannedTailscaleHosts &&
+                        !isScanningTailscaleHosts &&
+                        !tailscaleDiscoveryError ? (
+                        <p className="text-xs text-muted-foreground">
+                          No online T3 Code backends were found on your tailnet.
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {savedBackendError ? (
                     <p className="text-xs text-destructive">{savedBackendError}</p>
                   ) : null}
