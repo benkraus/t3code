@@ -1,7 +1,7 @@
 import type { ExecFileException, ExecFileOptionsWithStringEncoding } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 
-import { parseTailscaleStatusOutput, scanTailscaleHosts } from "./tailscaleDiscovery";
+import { parseTailscaleStatusOutput, scanTailscaleHosts } from "./tailscaleDiscovery.js";
 
 describe("parseTailscaleStatusOutput", () => {
   it("keeps online peers and prefers MagicDNS names", () => {

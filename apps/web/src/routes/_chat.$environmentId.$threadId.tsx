@@ -1,6 +1,7 @@
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
+import BrowserPane from "../components/BrowserPane";
 import ChatView from "../components/ChatView";
 import { threadHasStarted } from "../components/ChatView.logic";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
@@ -12,10 +13,11 @@ import {
 } from "../components/DiffPanelShell";
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
 import {
-  type DiffRouteSearch,
-  parseDiffRouteSearch,
+  type ThreadPaneRouteSearch,
+  parseThreadPaneRouteSearch,
+  stripBrowserSearchParams,
   stripDiffSearchParams,
-} from "../diffRouteSearch";
+} from "../threadPaneRouteSearch";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
@@ -28,6 +30,10 @@ const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const DIFF_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_diff_sidebar_width";
 const DIFF_INLINE_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
 const DIFF_INLINE_SIDEBAR_MIN_WIDTH = 26 * 16;
+const BROWSER_INLINE_LAYOUT_MEDIA_QUERY = "(max-width: 1280px)";
+const BROWSER_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_browser_sidebar_width";
+const BROWSER_INLINE_DEFAULT_WIDTH = "clamp(24rem,36vw,40rem)";
+const BROWSER_INLINE_SIDEBAR_MIN_WIDTH = 22 * 16;
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
 
 const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
@@ -35,6 +41,18 @@ const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
     <DiffPanelShell mode={props.mode} header={<DiffPanelHeaderSkeleton />}>
       <DiffPanelLoadingState label="Loading diff viewer..." />
     </DiffPanelShell>
+  );
+};
+
+const BrowserPaneSheet = (props: {
+  children: ReactNode;
+  browserOpen: boolean;
+  onCloseBrowser: () => void;
+}) => {
+  return (
+    <RightPanelSheet open={props.browserOpen} onClose={props.onCloseBrowser}>
+      {props.children}
+    </RightPanelSheet>
   );
 };
 
@@ -136,6 +154,48 @@ const DiffPanelInlineSidebar = (props: {
   );
 };
 
+const BrowserPaneInlineSidebar = (props: {
+  browserOpen: boolean;
+  onCloseBrowser: () => void;
+  onOpenBrowser: () => void;
+  renderBrowserContent: boolean;
+}) => {
+  const { browserOpen, onCloseBrowser, onOpenBrowser, renderBrowserContent } = props;
+  const onOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) {
+        onOpenBrowser();
+        return;
+      }
+      onCloseBrowser();
+    },
+    [onCloseBrowser, onOpenBrowser],
+  );
+
+  return (
+    <SidebarProvider
+      defaultOpen={false}
+      open={browserOpen}
+      onOpenChange={onOpenChange}
+      className="w-auto min-h-0 flex-none bg-transparent"
+      style={{ "--sidebar-width": BROWSER_INLINE_DEFAULT_WIDTH } as React.CSSProperties}
+    >
+      <Sidebar
+        side="right"
+        collapsible="offcanvas"
+        className="border-l border-border bg-card text-foreground"
+        resizable={{
+          minWidth: BROWSER_INLINE_SIDEBAR_MIN_WIDTH,
+          storageKey: BROWSER_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
+        }}
+      >
+        {renderBrowserContent ? <BrowserPane mode="sidebar" onClose={onCloseBrowser} /> : null}
+        <SidebarRail />
+      </Sidebar>
+    </SidebarProvider>
+  );
+};
+
 function ChatThreadRouteView() {
   const navigate = useNavigate();
   const threadRef = Route.useParams({
@@ -166,27 +226,49 @@ function ChatThreadRouteView() {
   const serverThreadStarted = threadHasStarted(serverThread);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
   const diffOpen = search.diff === "1";
+  const browserOpen = search.browser === "1";
   const shouldUseDiffSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const shouldUseBrowserSheet = useMediaQuery(BROWSER_INLINE_LAYOUT_MEDIA_QUERY);
   const currentThreadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;
-  const [diffPanelMountState, setDiffPanelMountState] = useState(() => ({
+  const [paneMountState, setPaneMountState] = useState(() => ({
     threadKey: currentThreadKey,
     hasOpenedDiff: diffOpen,
+    hasOpenedBrowser: browserOpen,
   }));
   const hasOpenedDiff =
-    diffPanelMountState.threadKey === currentThreadKey
-      ? diffPanelMountState.hasOpenedDiff
-      : diffOpen;
+    paneMountState.threadKey === currentThreadKey ? paneMountState.hasOpenedDiff : diffOpen;
+  const hasOpenedBrowser =
+    paneMountState.threadKey === currentThreadKey ? paneMountState.hasOpenedBrowser : browserOpen;
+  const markPaneOpened = useCallback(
+    (pane: "diff" | "browser") => {
+      setPaneMountState((previous) => {
+        const hasOpenedDiff =
+          previous.threadKey === currentThreadKey ? previous.hasOpenedDiff : diffOpen;
+        const hasOpenedBrowser =
+          previous.threadKey === currentThreadKey ? previous.hasOpenedBrowser : browserOpen;
+        const nextState = {
+          threadKey: currentThreadKey,
+          hasOpenedDiff: pane === "diff" ? true : hasOpenedDiff,
+          hasOpenedBrowser: pane === "browser" ? true : hasOpenedBrowser,
+        };
+        if (
+          previous.threadKey === nextState.threadKey &&
+          previous.hasOpenedDiff === nextState.hasOpenedDiff &&
+          previous.hasOpenedBrowser === nextState.hasOpenedBrowser
+        ) {
+          return previous;
+        }
+        return nextState;
+      });
+    },
+    [browserOpen, currentThreadKey, diffOpen],
+  );
   const markDiffOpened = useCallback(() => {
-    setDiffPanelMountState((previous) => {
-      if (previous.threadKey === currentThreadKey && previous.hasOpenedDiff) {
-        return previous;
-      }
-      return {
-        threadKey: currentThreadKey,
-        hasOpenedDiff: true,
-      };
-    });
-  }, [currentThreadKey]);
+    markPaneOpened("diff");
+  }, [markPaneOpened]);
+  const markBrowserOpened = useCallback(() => {
+    markPaneOpened("browser");
+  }, [markPaneOpened]);
   const closeDiff = useCallback(() => {
     if (!threadRef) {
       return;
@@ -212,6 +294,31 @@ function ChatThreadRouteView() {
     });
   }, [markDiffOpened, navigate, threadRef]);
 
+  const closeBrowser = useCallback(() => {
+    if (!threadRef) {
+      return;
+    }
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(threadRef),
+      search: (previous) => ({
+        ...stripBrowserSearchParams(previous),
+        browser: undefined,
+      }),
+    });
+  }, [navigate, threadRef]);
+  const openBrowser = useCallback(() => {
+    if (!threadRef) {
+      return;
+    }
+    markBrowserOpened();
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(threadRef),
+      search: (previous) => ({ ...previous, browser: "1" }),
+    });
+  }, [markBrowserOpened, navigate, threadRef]);
+
   useEffect(() => {
     if (!threadRef || !bootstrapComplete) {
       return;
@@ -234,8 +341,9 @@ function ChatThreadRouteView() {
   }
 
   const shouldRenderDiffContent = diffOpen || hasOpenedDiff;
+  const shouldRenderBrowserContent = browserOpen || hasOpenedBrowser;
 
-  if (!shouldUseDiffSheet) {
+  if (!shouldUseDiffSheet && !shouldUseBrowserSheet) {
     return (
       <>
         <SidebarInset className="h-dvh  min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
@@ -247,6 +355,12 @@ function ChatThreadRouteView() {
             routeKind="server"
           />
         </SidebarInset>
+        <BrowserPaneInlineSidebar
+          browserOpen={browserOpen}
+          onCloseBrowser={closeBrowser}
+          onOpenBrowser={openBrowser}
+          renderBrowserContent={shouldRenderBrowserContent}
+        />
         <DiffPanelInlineSidebar
           diffOpen={diffOpen}
           onCloseDiff={closeDiff}
@@ -267,6 +381,9 @@ function ChatThreadRouteView() {
           routeKind="server"
         />
       </SidebarInset>
+      <BrowserPaneSheet browserOpen={browserOpen} onCloseBrowser={closeBrowser}>
+        {shouldRenderBrowserContent ? <BrowserPane mode="sheet" onClose={closeBrowser} /> : null}
+      </BrowserPaneSheet>
       <RightPanelSheet open={diffOpen} onClose={closeDiff}>
         {shouldRenderDiffContent ? <LazyDiffPanel mode="sheet" /> : null}
       </RightPanelSheet>
@@ -275,9 +392,11 @@ function ChatThreadRouteView() {
 }
 
 export const Route = createFileRoute("/_chat/$environmentId/$threadId")({
-  validateSearch: (search) => parseDiffRouteSearch(search),
+  validateSearch: (search) => parseThreadPaneRouteSearch(search),
   search: {
-    middlewares: [retainSearchParams<DiffRouteSearch>(["diff"])],
+    middlewares: [
+      retainSearchParams<ThreadPaneRouteSearch>(["diff", "diffTurnId", "diffFilePath", "browser"]),
+    ],
   },
   component: ChatThreadRouteView,
 });
