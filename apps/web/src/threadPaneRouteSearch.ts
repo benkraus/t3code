@@ -1,12 +1,13 @@
 import { TurnId } from "@t3tools/contracts";
 
-export interface DiffRouteSearch {
+export interface ThreadPaneRouteSearch {
   diff?: "1" | undefined;
   diffTurnId?: TurnId | undefined;
   diffFilePath?: string | undefined;
+  browser?: "1" | undefined;
 }
 
-function isDiffOpenValue(value: unknown): boolean {
+function isPaneOpenValue(value: unknown): boolean {
   return value === "1" || value === 1 || value === true;
 }
 
@@ -25,15 +26,24 @@ export function stripDiffSearchParams<T extends Record<string, unknown>>(
   return rest as Omit<T, "diff" | "diffTurnId" | "diffFilePath">;
 }
 
-export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRouteSearch {
-  const diff = isDiffOpenValue(search.diff) ? "1" : undefined;
+export function stripBrowserSearchParams<T extends Record<string, unknown>>(
+  params: T,
+): Omit<T, "browser"> {
+  const { browser: _browser, ...rest } = params;
+  return rest as Omit<T, "browser">;
+}
+
+export function parseThreadPaneRouteSearch(search: Record<string, unknown>): ThreadPaneRouteSearch {
+  const diff = isPaneOpenValue(search.diff) ? "1" : undefined;
   const diffTurnIdRaw = diff ? normalizeSearchString(search.diffTurnId) : undefined;
   const diffTurnId = diffTurnIdRaw ? TurnId.makeUnsafe(diffTurnIdRaw) : undefined;
   const diffFilePath = diff && diffTurnId ? normalizeSearchString(search.diffFilePath) : undefined;
+  const browser = isPaneOpenValue(search.browser) ? "1" : undefined;
 
   return {
     ...(diff ? { diff } : {}),
     ...(diffTurnId ? { diffTurnId } : {}),
     ...(diffFilePath ? { diffFilePath } : {}),
+    ...(browser ? { browser } : {}),
   };
 }

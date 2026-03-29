@@ -6,7 +6,7 @@ import path from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Exit, Layer, PlatformError, PubSub, Scope, Stream } from "effect";
 import { describe, expect, it, afterEach, vi } from "vitest";
-import { createServer } from "./wsServer";
+import { createServer, shouldRedirectHttpRequestToDevServer } from "./wsServer";
 import WebSocket from "ws";
 import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "./config";
 import { makeServerProviderLayer, makeServerRuntimeServicesLayer } from "./serverLayers";
@@ -411,7 +411,7 @@ async function rewriteKeybindingsAndWaitForPush(
 async function requestPath(
   port: number,
   requestPath: string,
-): Promise<{ statusCode: number; body: string }> {
+): Promise<{ statusCode: number; body: string; headers: Http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const req = Http.request(
       {
@@ -429,6 +429,7 @@ async function requestPath(
           resolve({
             statusCode: res.statusCode ?? 0,
             body: Buffer.concat(chunks).toString("utf8"),
+            headers: res.headers,
           });
         });
       },
@@ -700,6 +701,29 @@ describe("WebSocket Server", () => {
     const response = await fetch(`http://127.0.0.1:${port}/`);
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("static-root");
+  });
+
+  it("redirects loopback HTTP requests to the dev server when configured", async () => {
+    server = await createTestServer({
+      cwd: "/test/project",
+      devUrl: "http://localhost:5173",
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const response = await requestPath(port, "/");
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("http://localhost:5173/");
+  });
+
+  it("only redirects loopback HTTP requests to the dev server", () => {
+    expect(shouldRedirectHttpRequestToDevServer(undefined)).toBe(true);
+    expect(shouldRedirectHttpRequestToDevServer("127.0.0.1")).toBe(true);
+    expect(shouldRedirectHttpRequestToDevServer("::1")).toBe(true);
+    expect(shouldRedirectHttpRequestToDevServer("::ffff:127.0.0.1")).toBe(true);
+    expect(shouldRedirectHttpRequestToDevServer("192.168.1.20")).toBe(false);
+    expect(shouldRedirectHttpRequestToDevServer("::ffff:192.168.1.20")).toBe(false);
   });
 
   it("rejects static path traversal attempts", async () => {

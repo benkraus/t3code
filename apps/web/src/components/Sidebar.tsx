@@ -30,6 +30,7 @@ import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
+  type DesktopConnectionMode,
   type DesktopUpdateState,
   ProjectId,
   ThreadId,
@@ -97,6 +98,7 @@ import {
   resolveSidebarNewThreadEnvMode,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
+  shouldBrowseForProjectImmediately as resolveShouldBrowseForProjectImmediately,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   sortThreadsForSidebar,
@@ -378,6 +380,8 @@ export default function Sidebar() {
   const [isPickingFolder, setIsPickingFolder] = useState(false);
   const [isAddingProject, setIsAddingProject] = useState(false);
   const [addProjectError, setAddProjectError] = useState<string | null>(null);
+  const [desktopConnectionMode, setDesktopConnectionMode] =
+    useState<DesktopConnectionMode>("local");
   const addProjectInputRef = useRef<HTMLInputElement | null>(null);
   const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
@@ -396,8 +400,36 @@ export default function Sidebar() {
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const isLinuxDesktop = isElectron && isLinuxPlatform(navigator.platform);
-  const shouldBrowseForProjectImmediately = isElectron && !isLinuxDesktop;
+  const shouldBrowseForProjectImmediately = resolveShouldBrowseForProjectImmediately({
+    isElectron,
+    isLinuxDesktop,
+    desktopConnectionMode,
+  });
   const shouldShowProjectPathEntry = addingProject && !shouldBrowseForProjectImmediately;
+
+  useEffect(() => {
+    if (!isElectron) return;
+    const bridge = window.desktopBridge;
+    if (!bridge?.getConnectionSettings) return;
+
+    let cancelled = false;
+    void bridge
+      .getConnectionSettings()
+      .then((settings) => {
+        if (!cancelled) {
+          setDesktopConnectionMode(settings.mode);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDesktopConnectionMode("local");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const projectCwdById = useMemo(
     () => new Map(projects.map((project) => [project.id, project.cwd] as const)),
     [projects],
@@ -1704,7 +1736,7 @@ export default function Sidebar() {
 
           {shouldShowProjectPathEntry && (
             <div className="mb-2 px-1">
-              {isElectron && (
+              {isElectron && desktopConnectionMode !== "remote" && (
                 <button
                   type="button"
                   className="mb-1.5 flex w-full items-center justify-center gap-2 rounded-md border border-border bg-secondary py-1.5 text-xs text-foreground/80 transition-colors duration-150 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
@@ -1723,7 +1755,11 @@ export default function Sidebar() {
                       ? "border-red-500/70 focus:border-red-500"
                       : "border-border focus:border-ring"
                   }`}
-                  placeholder="/path/to/project"
+                  placeholder={
+                    desktopConnectionMode === "remote"
+                      ? "/path/on/remote/server"
+                      : "/path/to/project"
+                  }
                   value={newCwd}
                   onChange={(event) => {
                     setNewCwd(event.target.value);
@@ -1750,6 +1786,11 @@ export default function Sidebar() {
               {addProjectError && (
                 <p className="mt-1 px-0.5 text-[11px] leading-tight text-red-400">
                   {addProjectError}
+                </p>
+              )}
+              {desktopConnectionMode === "remote" && (
+                <p className="mt-1 px-0.5 text-[11px] leading-tight text-muted-foreground/60">
+                  Enter a directory path on the connected server.
                 </p>
               )}
               <div className="mt-1.5 px-0.5">

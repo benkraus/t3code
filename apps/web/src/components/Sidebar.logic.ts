@@ -67,6 +67,14 @@ export function resolveSidebarNewThreadEnvMode(input: {
   return input.requestedEnvMode ?? input.defaultEnvMode;
 }
 
+export function shouldBrowseForProjectImmediately(input: {
+  isElectron: boolean;
+  isLinuxDesktop: boolean;
+  desktopConnectionMode: "local" | "remote";
+}): boolean {
+  return input.isElectron && !input.isLinuxDesktop && input.desktopConnectionMode !== "remote";
+}
+
 export function resolveThreadRowClassName(input: {
   isActive: boolean;
   isSelected: boolean;

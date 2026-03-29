@@ -157,6 +157,16 @@ function websocketRawToString(raw: unknown): string | null {
   return null;
 }
 
+export function shouldRedirectHttpRequestToDevServer(remoteAddress: string | undefined): boolean {
+  if (!remoteAddress) {
+    return true;
+  }
+
+  return (
+    remoteAddress === "::1" || remoteAddress === "127.0.0.1" || remoteAddress === "::ffff:127.0.0.1"
+  );
+}
+
 function toPosixRelativePath(input: string): string {
   return input.replaceAll("\\", "/");
 }
@@ -520,7 +530,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }
 
         // In dev mode, redirect to Vite dev server
-        if (devUrl) {
+        if (devUrl && shouldRedirectHttpRequestToDevServer(req.socket.remoteAddress)) {
           respond(302, { Location: devUrl.href });
           return;
         }

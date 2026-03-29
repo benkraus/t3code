@@ -210,7 +210,12 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     ],
   );
 
-  if (effort === null && thinkingEnabled === null && contextWindowOptions.length <= 1) {
+  if (
+    effort === null &&
+    thinkingEnabled === null &&
+    !caps.supportsFastMode &&
+    contextWindowOptions.length <= 1
+  ) {
     return null;
   }
 

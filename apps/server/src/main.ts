@@ -261,7 +261,7 @@ const ServerConfigLive = (input: CliInput) =>
           () => Boolean(devUrl),
         ),
       );
-      const staticDir = devUrl ? undefined : yield* cliConfig.resolveStaticDir;
+      const staticDir = yield* cliConfig.resolveStaticDir;
       const host = Option.getOrElse(
         resolveOptionPrecedence(
           input.host,

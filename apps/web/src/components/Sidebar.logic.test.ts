@@ -9,6 +9,7 @@ import {
   resolveSidebarNewThreadEnvMode,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
+  shouldBrowseForProjectImmediately,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   sortThreadsForSidebar,
@@ -93,6 +94,38 @@ describe("resolveSidebarNewThreadEnvMode", () => {
         defaultEnvMode: "worktree",
       }),
     ).toBe("local");
+  });
+});
+
+describe("shouldBrowseForProjectImmediately", () => {
+  it("uses the native picker on supported local desktop builds", () => {
+    expect(
+      shouldBrowseForProjectImmediately({
+        isElectron: true,
+        isLinuxDesktop: false,
+        desktopConnectionMode: "local",
+      }),
+    ).toBe(true);
+  });
+
+  it("disables the native picker for remote desktop connections", () => {
+    expect(
+      shouldBrowseForProjectImmediately({
+        isElectron: true,
+        isLinuxDesktop: false,
+        desktopConnectionMode: "remote",
+      }),
+    ).toBe(false);
+  });
+
+  it("disables the native picker on Linux desktop builds", () => {
+    expect(
+      shouldBrowseForProjectImmediately({
+        isElectron: true,
+        isLinuxDesktop: true,
+        desktopConnectionMode: "local",
+      }),
+    ).toBe(false);
   });
 });
 
