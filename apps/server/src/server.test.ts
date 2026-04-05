@@ -4,23 +4,25 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   DEFAULT_SERVER_SETTINGS,
+  EditorId,
   GitCommandError,
+  type IosSimulatorInteractionInput,
   KeybindingRule,
   OpenError,
-  TerminalNotRunningError,
-  type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   ResolvedKeybindingRule,
   ThreadId,
+  TerminalNotRunningError,
+  type OrchestrationEvent,
   WS_METHODS,
   WsRpcGroup,
-  EditorId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import { Effect, FileSystem, Layer, Path, Stream } from "effect";
 import { HttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 
 import type { ServerConfigShape } from "./config.ts";
@@ -36,6 +38,7 @@ import { GitCore, type GitCoreShape } from "./git/Services/GitCore.ts";
 import { GitManager, type GitManagerShape } from "./git/Services/GitManager.ts";
 import { Keybindings, type KeybindingsShape } from "./keybindings.ts";
 import { Open, type OpenShape } from "./open.ts";
+import { IosSimulator, type IosSimulatorShape } from "./iosSimulator/Services/IosSimulator.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -130,6 +133,7 @@ const buildAppUnderTest = (options?: {
     orchestrationEngine?: Partial<OrchestrationEngineShape>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
+    iosSimulator?: Partial<IosSimulatorShape>;
     serverLifecycleEvents?: Partial<ServerLifecycleEventsShape>;
     serverRuntimeStartup?: Partial<ServerRuntimeStartupShape>;
   };
@@ -247,6 +251,24 @@ const buildAppUnderTest = (options?: {
               diff: "",
             }),
           ...options?.layers?.checkpointDiffQuery,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(IosSimulator)({
+          getStatus: Effect.succeed({
+            reason: "no-booted-iphone",
+            supported: true,
+            available: false,
+            message: "Boot an iPhone simulator on the host Mac to mirror it here.",
+            interactionSupported: true,
+            interactionAvailable: false,
+            interactionMessage: "Boot an iPhone simulator on the host Mac to mirror it here.",
+          }),
+          captureFrame: Effect.fail(
+            new Error("Boot an iPhone simulator on the host Mac to mirror it here."),
+          ),
+          sendInput: () => Effect.void,
+          ...options?.layers?.iosSimulator,
         }),
       ),
       Layer.provide(
@@ -387,6 +409,119 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepEqual(yield* response.json, {
         app: "t3code",
         authEnabled: false,
+      });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("reports ios simulator status for remote panes", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          iosSimulator: {
+            getStatus: Effect.succeed({
+              reason: "available",
+              supported: true,
+              available: true,
+              message: "Streaming iPhone 16 Pro from the host Mac.",
+              deviceName: "iPhone 16 Pro",
+              udid: "sim-123",
+              interactionSupported: true,
+              interactionAvailable: true,
+              interactionMessage: "Interactive control ready.",
+            }),
+          },
+        },
+      });
+
+      const response = yield* HttpClient.get("/api/ios-simulator/status");
+      assert.equal(response.status, 200);
+      assert.deepEqual(yield* response.json, {
+        reason: "available",
+        supported: true,
+        available: true,
+        message: "Streaming iPhone 16 Pro from the host Mac.",
+        deviceName: "iPhone 16 Pro",
+        udid: "sim-123",
+        interactionSupported: true,
+        interactionAvailable: true,
+        interactionMessage: "Interactive control ready.",
+      });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("streams ios simulator frames for live panes", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          iosSimulator: {
+            captureFrame: Effect.succeed({
+              contentType: "image/png",
+              data: Uint8Array.from([137, 80, 78, 71]),
+            }),
+          },
+        },
+      });
+
+      const url = yield* getHttpServerUrl("/api/ios-simulator/stream");
+      const result = yield* Effect.promise(async () => {
+        const controller = new AbortController();
+        const response = await fetch(url, {
+          signal: controller.signal,
+        });
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error("Expected a readable simulator stream body.");
+        }
+
+        const firstChunk = await reader.read();
+        await reader.cancel();
+        controller.abort();
+
+        return {
+          status: response.status,
+          contentType: response.headers.get("content-type"),
+          chunk: new TextDecoder().decode(firstChunk.value),
+        };
+      });
+
+      assert.equal(result.status, 200);
+      assert.include(result.contentType ?? "", "text/event-stream");
+      assert.include(result.chunk, "event: frame");
+      assert.include(result.chunk, '"imageBase64":"iVBORw=="');
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("forwards ios simulator input gestures", () =>
+    Effect.gen(function* () {
+      let receivedInput: IosSimulatorInteractionInput | null = null;
+
+      yield* buildAppUnderTest({
+        layers: {
+          iosSimulator: {
+            sendInput: (input) =>
+              Effect.sync(() => {
+                receivedInput = input;
+              }),
+          },
+        },
+      });
+
+      const request = yield* HttpClientRequest.post("/api/ios-simulator/input").pipe(
+        HttpClientRequest.bodyJson({
+          type: "tap",
+          x: 0.4,
+          y: 0.6,
+          frameAspectRatio: 0.46,
+        }),
+      );
+      const response = yield* HttpClient.execute(request);
+
+      assert.equal(response.status, 204);
+      assert.deepEqual(receivedInput, {
+        type: "tap",
+        x: 0.4,
+        y: 0.6,
+        frameAspectRatio: 0.46,
       });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );

@@ -15,6 +15,22 @@ const buildSourcemap =
       ? "hidden"
       : true;
 
+function resolveHttpProxyTarget(rawWsUrl: string | undefined): string | undefined {
+  if (!rawWsUrl) {
+    return undefined;
+  }
+
+  try {
+    const parsed = new URL(rawWsUrl);
+    const protocol = parsed.protocol === "wss:" ? "https:" : "http:";
+    return `${protocol}//${parsed.host}`;
+  } catch {
+    return undefined;
+  }
+}
+
+const proxyTarget = resolveHttpProxyTarget(process.env.VITE_WS_URL);
+
 export default defineConfig({
   plugins: [
     tanstackRouter(),
@@ -43,6 +59,20 @@ export default defineConfig({
   server: {
     port,
     strictPort: true,
+    ...(proxyTarget
+      ? {
+          proxy: {
+            "/api": {
+              target: proxyTarget,
+              changeOrigin: true,
+            },
+            "/attachments": {
+              target: proxyTarget,
+              changeOrigin: true,
+            },
+          },
+        }
+      : {}),
     hmr: {
       // Explicit config so Vite's HMR WebSocket connects reliably
       // inside Electron's BrowserWindow. Vite 8 uses console.debug for

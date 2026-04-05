@@ -1,19 +1,30 @@
 import Mime from "@effect/platform-node/Mime";
-import { Effect, FileSystem, Option, Path } from "effect";
+import { Effect, FileSystem, Option, Path, Schedule, Schema, Stream } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
-import { type ServerDiscoveryInfo } from "@t3tools/contracts";
+import {
+  IosSimulatorInteractionInput,
+  type IosSimulatorStatus,
+  type ServerDiscoveryInfo,
+} from "@t3tools/contracts";
 import {
   ATTACHMENTS_ROUTE_PREFIX,
   normalizeAttachmentRelativePath,
   resolveAttachmentRelativePath,
 } from "./attachmentPaths";
+import { IosSimulator } from "./iosSimulator/Services/IosSimulator";
 import { resolveAttachmentPathById } from "./attachmentStore";
 import { ServerConfig } from "./config";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver";
 
 const PROJECT_FAVICON_CACHE_CONTROL = "public, max-age=3600";
 const FALLBACK_PROJECT_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#6b728080" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" data-fallback="project-favicon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/></svg>`;
+const IOS_SIMULATOR_STREAM_INTERVAL_MS = 250;
+const textEncoder = new TextEncoder();
+
+function encodeSseEvent(event: string, payload: unknown): Uint8Array {
+  return textEncoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+}
 
 export function shouldRedirectHttpRequestToDevServer(remoteAddress: string | undefined): boolean {
   if (!remoteAddress) {
@@ -41,6 +52,135 @@ export const serverDiscoveryRouteLayer = HttpRouter.add(
         "Cache-Control": "no-store",
       },
     });
+  }),
+);
+
+export const iosSimulatorStatusRouteLayer = HttpRouter.add(
+  "GET",
+  "/api/ios-simulator/status",
+  Effect.gen(function* () {
+    const simulator = yield* IosSimulator;
+    const payload: IosSimulatorStatus = yield* simulator.getStatus;
+
+    return yield* HttpServerResponse.json(payload, {
+      status: 200,
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    });
+  }),
+);
+
+export const iosSimulatorFrameRouteLayer = HttpRouter.add(
+  "GET",
+  "/api/ios-simulator/frame",
+  Effect.gen(function* () {
+    const simulator = yield* IosSimulator;
+    return yield* simulator.captureFrame.pipe(
+      Effect.map((frame) =>
+        HttpServerResponse.uint8Array(frame.data, {
+          status: 200,
+          contentType: frame.contentType,
+          headers: {
+            "Cache-Control": "no-store",
+          },
+        }),
+      ),
+      Effect.catch((error) =>
+        Effect.succeed(
+          HttpServerResponse.text(
+            error instanceof Error
+              ? error.message
+              : "Unable to capture an iPhone simulator frame from the host Mac.",
+            {
+              status: 503,
+              headers: {
+                "Cache-Control": "no-store",
+              },
+            },
+          ),
+        ),
+      ),
+    );
+  }),
+);
+
+export const iosSimulatorStreamRouteLayer = HttpRouter.add(
+  "GET",
+  "/api/ios-simulator/stream",
+  Effect.gen(function* () {
+    const simulator = yield* IosSimulator;
+
+    const stream = Stream.fromEffectSchedule(
+      simulator.captureFrame.pipe(
+        Effect.map((frame) =>
+          encodeSseEvent("frame", {
+            contentType: frame.contentType,
+            imageBase64: Buffer.from(frame.data).toString("base64"),
+            capturedAt: Date.now(),
+          }),
+        ),
+        Effect.catch((error) =>
+          Effect.succeed(
+            encodeSseEvent("status", {
+              available: false,
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Unable to capture an iPhone simulator frame from the host Mac.",
+            }),
+          ),
+        ),
+      ),
+      Schedule.spaced(`${IOS_SIMULATOR_STREAM_INTERVAL_MS} millis`),
+    );
+
+    return HttpServerResponse.stream(stream, {
+      status: 200,
+      contentType: "text/event-stream; charset=utf-8",
+      headers: {
+        "Cache-Control": "no-store",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }),
+);
+
+export const iosSimulatorInputRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/ios-simulator/input",
+  Effect.gen(function* () {
+    const simulator = yield* IosSimulator;
+
+    return yield* HttpServerRequest.schemaBodyJson(IosSimulatorInteractionInput).pipe(
+      Effect.flatMap((input) => simulator.sendInput(input)),
+      Effect.as(
+        HttpServerResponse.empty({
+          status: 204,
+          headers: {
+            "Cache-Control": "no-store",
+          },
+        }),
+      ),
+      Effect.catch((error) =>
+        Effect.succeed(
+          HttpServerResponse.text(
+            Schema.isSchemaError(error)
+              ? "Invalid simulator interaction payload."
+              : error instanceof Error
+                ? error.message
+                : "Unable to forward input to the host iPhone simulator.",
+            {
+              status: Schema.isSchemaError(error) ? 400 : 503,
+              headers: {
+                "Cache-Control": "no-store",
+              },
+            },
+          ),
+        ),
+      ),
+    );
   }),
 );
 

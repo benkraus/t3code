@@ -23,11 +23,13 @@ describe("parseThreadPaneRouteSearch", () => {
         diff: 1,
         diffTurnId: "turn-1",
         browser: true,
+        simulator: true,
       }),
     ).toEqual({
       diff: "1",
       diffTurnId: "turn-1",
       browser: "1",
+      simulator: "1",
     });
   });
 

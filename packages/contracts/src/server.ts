@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import {
   IsoDateTime,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -210,3 +211,50 @@ export const ServerDiscoveryInfo = Schema.Struct({
   authEnabled: Schema.Boolean,
 });
 export type ServerDiscoveryInfo = typeof ServerDiscoveryInfo.Type;
+
+export const IosSimulatorStatusReason = Schema.Literals([
+  "available",
+  "unsupported-platform",
+  "simctl-unavailable",
+  "no-booted-iphone",
+  "unreachable",
+]);
+export type IosSimulatorStatusReason = typeof IosSimulatorStatusReason.Type;
+
+export const IosSimulatorStatus = Schema.Struct({
+  reason: IosSimulatorStatusReason,
+  supported: Schema.Boolean,
+  available: Schema.Boolean,
+  message: TrimmedNonEmptyString,
+  deviceName: Schema.optional(TrimmedNonEmptyString),
+  udid: Schema.optional(TrimmedNonEmptyString),
+  interactionSupported: Schema.Boolean,
+  interactionAvailable: Schema.Boolean,
+  interactionMessage: Schema.optional(TrimmedNonEmptyString),
+});
+export type IosSimulatorStatus = typeof IosSimulatorStatus.Type;
+
+export const IosSimulatorTapInput = Schema.Struct({
+  type: Schema.Literal("tap"),
+  x: Schema.Number,
+  y: Schema.Number,
+  frameAspectRatio: Schema.Number,
+});
+export type IosSimulatorTapInput = typeof IosSimulatorTapInput.Type;
+
+export const IosSimulatorSwipeInput = Schema.Struct({
+  type: Schema.Literal("swipe"),
+  fromX: Schema.Number,
+  fromY: Schema.Number,
+  toX: Schema.Number,
+  toY: Schema.Number,
+  durationMs: PositiveInt,
+  frameAspectRatio: Schema.Number,
+});
+export type IosSimulatorSwipeInput = typeof IosSimulatorSwipeInput.Type;
+
+export const IosSimulatorInteractionInput = Schema.Union([
+  IosSimulatorTapInput,
+  IosSimulatorSwipeInput,
+]);
+export type IosSimulatorInteractionInput = typeof IosSimulatorInteractionInput.Type;

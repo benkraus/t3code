@@ -17,11 +17,13 @@ import {
   parseThreadPaneRouteSearch,
   stripBrowserSearchParams,
   stripDiffSearchParams,
+  stripSimulatorSearchParams,
 } from "../threadPaneRouteSearch";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
 import { Sheet, SheetPopup } from "../components/ui/sheet";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
+import SimulatorPane from "../components/SimulatorPane";
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const DIFF_INLINE_LAYOUT_MEDIA_QUERY = "(max-width: 1180px)";
@@ -32,6 +34,10 @@ const BROWSER_INLINE_LAYOUT_MEDIA_QUERY = "(max-width: 1280px)";
 const BROWSER_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_browser_sidebar_width";
 const BROWSER_INLINE_DEFAULT_WIDTH = "clamp(24rem,36vw,40rem)";
 const BROWSER_INLINE_SIDEBAR_MIN_WIDTH = 22 * 16;
+const SIMULATOR_INLINE_LAYOUT_MEDIA_QUERY = "(max-width: 1120px)";
+const SIMULATOR_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_simulator_sidebar_width";
+const SIMULATOR_INLINE_DEFAULT_WIDTH = "clamp(22rem,30vw,28rem)";
+const SIMULATOR_INLINE_SIDEBAR_MIN_WIDTH = 20 * 16;
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
 
 const DiffPanelSheet = (props: {
@@ -87,6 +93,32 @@ const BrowserPaneSheet = (props: {
         showCloseButton={false}
         keepMounted
         className="w-[min(92vw,980px)] max-w-[980px] p-0"
+      >
+        {props.children}
+      </SheetPopup>
+    </Sheet>
+  );
+};
+
+const SimulatorPaneSheet = (props: {
+  children: ReactNode;
+  simulatorOpen: boolean;
+  onCloseSimulator: () => void;
+}) => {
+  return (
+    <Sheet
+      open={props.simulatorOpen}
+      onOpenChange={(open) => {
+        if (!open) {
+          props.onCloseSimulator();
+        }
+      }}
+    >
+      <SheetPopup
+        side="right"
+        showCloseButton={false}
+        keepMounted
+        className="w-[min(92vw,540px)] max-w-[540px] p-0"
       >
         {props.children}
       </SheetPopup>
@@ -234,6 +266,50 @@ const BrowserPaneInlineSidebar = (props: {
   );
 };
 
+const SimulatorPaneInlineSidebar = (props: {
+  simulatorOpen: boolean;
+  onCloseSimulator: () => void;
+  onOpenSimulator: () => void;
+  renderSimulatorContent: boolean;
+}) => {
+  const { simulatorOpen, onCloseSimulator, onOpenSimulator, renderSimulatorContent } = props;
+  const onOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) {
+        onOpenSimulator();
+        return;
+      }
+      onCloseSimulator();
+    },
+    [onCloseSimulator, onOpenSimulator],
+  );
+
+  return (
+    <SidebarProvider
+      defaultOpen={false}
+      open={simulatorOpen}
+      onOpenChange={onOpenChange}
+      className="w-auto min-h-0 flex-none bg-transparent"
+      style={{ "--sidebar-width": SIMULATOR_INLINE_DEFAULT_WIDTH } as React.CSSProperties}
+    >
+      <Sidebar
+        side="right"
+        collapsible="offcanvas"
+        className="border-l border-border bg-card text-foreground"
+        resizable={{
+          minWidth: SIMULATOR_INLINE_SIDEBAR_MIN_WIDTH,
+          storageKey: SIMULATOR_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
+        }}
+      >
+        {renderSimulatorContent ? (
+          <SimulatorPane mode="sidebar" onClose={onCloseSimulator} />
+        ) : null}
+        <SidebarRail />
+      </Sidebar>
+    </SidebarProvider>
+  );
+};
+
 function ChatThreadRouteView() {
   const bootstrapComplete = useStore((store) => store.bootstrapComplete);
   const navigate = useNavigate();
@@ -248,12 +324,15 @@ function ChatThreadRouteView() {
   const routeThreadExists = threadExists || draftThreadExists;
   const diffOpen = search.diff === "1";
   const browserOpen = search.browser === "1";
+  const simulatorOpen = search.simulator === "1";
   const shouldUseDiffSheet = useMediaQuery(DIFF_INLINE_LAYOUT_MEDIA_QUERY);
   const shouldUseBrowserSheet = useMediaQuery(BROWSER_INLINE_LAYOUT_MEDIA_QUERY);
+  const shouldUseSimulatorSheet = useMediaQuery(SIMULATOR_INLINE_LAYOUT_MEDIA_QUERY);
   // TanStack Router keeps active route components mounted across param-only navigations
   // unless remountDeps are configured, so this stays warm across thread switches.
   const [hasOpenedDiff, setHasOpenedDiff] = useState(diffOpen);
   const [hasOpenedBrowser, setHasOpenedBrowser] = useState(browserOpen);
+  const [hasOpenedSimulator, setHasOpenedSimulator] = useState(simulatorOpen);
   const closeDiff = useCallback(() => {
     void navigate({
       to: "/$threadId",
@@ -288,6 +367,23 @@ function ChatThreadRouteView() {
       search: (previous) => ({ ...previous, browser: "1" }),
     });
   }, [navigate, threadId]);
+  const closeSimulator = useCallback(() => {
+    void navigate({
+      to: "/$threadId",
+      params: { threadId },
+      search: (previous) => ({
+        ...stripSimulatorSearchParams(previous),
+        simulator: undefined,
+      }),
+    });
+  }, [navigate, threadId]);
+  const openSimulator = useCallback(() => {
+    void navigate({
+      to: "/$threadId",
+      params: { threadId },
+      search: (previous) => ({ ...previous, simulator: "1" }),
+    });
+  }, [navigate, threadId]);
 
   useEffect(() => {
     if (diffOpen) {
@@ -300,6 +396,12 @@ function ChatThreadRouteView() {
       setHasOpenedBrowser(true);
     }
   }, [browserOpen]);
+
+  useEffect(() => {
+    if (simulatorOpen) {
+      setHasOpenedSimulator(true);
+    }
+  }, [simulatorOpen]);
 
   useEffect(() => {
     if (!bootstrapComplete) {
@@ -318,8 +420,9 @@ function ChatThreadRouteView() {
 
   const shouldRenderDiffContent = diffOpen || hasOpenedDiff;
   const shouldRenderBrowserContent = browserOpen || hasOpenedBrowser;
+  const shouldRenderSimulatorContent = simulatorOpen || hasOpenedSimulator;
 
-  if (!shouldUseDiffSheet && !shouldUseBrowserSheet) {
+  if (!shouldUseDiffSheet && !shouldUseBrowserSheet && !shouldUseSimulatorSheet) {
     return (
       <>
         <SidebarInset className="h-dvh  min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
@@ -337,6 +440,12 @@ function ChatThreadRouteView() {
           onOpenDiff={openDiff}
           renderDiffContent={shouldRenderDiffContent}
         />
+        <SimulatorPaneInlineSidebar
+          simulatorOpen={simulatorOpen}
+          onCloseSimulator={closeSimulator}
+          onOpenSimulator={openSimulator}
+          renderSimulatorContent={shouldRenderSimulatorContent}
+        />
       </>
     );
   }
@@ -352,6 +461,11 @@ function ChatThreadRouteView() {
       <DiffPanelSheet diffOpen={diffOpen} onCloseDiff={closeDiff}>
         {shouldRenderDiffContent ? <LazyDiffPanel mode="sheet" /> : null}
       </DiffPanelSheet>
+      <SimulatorPaneSheet simulatorOpen={simulatorOpen} onCloseSimulator={closeSimulator}>
+        {shouldRenderSimulatorContent ? (
+          <SimulatorPane mode="sheet" onClose={closeSimulator} />
+        ) : null}
+      </SimulatorPaneSheet>
     </>
   );
 }
@@ -359,7 +473,7 @@ function ChatThreadRouteView() {
 export const Route = createFileRoute("/_chat/$threadId")({
   validateSearch: (search) => parseThreadPaneRouteSearch(search),
   search: {
-    middlewares: [retainSearchParams<ThreadPaneRouteSearch>(["diff", "browser"])],
+    middlewares: [retainSearchParams<ThreadPaneRouteSearch>(["diff", "browser", "simulator"])],
   },
   component: ChatThreadRouteView,
 });

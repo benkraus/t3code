@@ -4,10 +4,15 @@ import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 import { ServerConfig } from "./config";
 import {
   attachmentsRouteLayer,
+  iosSimulatorFrameRouteLayer,
+  iosSimulatorInputRouteLayer,
+  iosSimulatorStatusRouteLayer,
+  iosSimulatorStreamRouteLayer,
   projectFaviconRouteLayer,
   serverDiscoveryRouteLayer,
   staticAndDevRouteLayer,
 } from "./http";
+import { IosSimulatorLive } from "./iosSimulator/Layers/IosSimulator";
 import { fixPath } from "./os-jank";
 import { websocketRpcRouteLayer } from "./ws";
 import { OpenLive } from "./open";
@@ -198,6 +203,7 @@ const RuntimeServicesLive = Layer.empty.pipe(
   Layer.provideMerge(ServerSettingsLive),
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLive),
+  Layer.provideMerge(IosSimulatorLive),
 
   // Misc.
   Layer.provideMerge(AnalyticsServiceLayerLive),
@@ -207,6 +213,10 @@ const RuntimeServicesLive = Layer.empty.pipe(
 
 export const makeRoutesLayer = Layer.mergeAll(
   attachmentsRouteLayer,
+  iosSimulatorFrameRouteLayer,
+  iosSimulatorInputRouteLayer,
+  iosSimulatorStatusRouteLayer,
+  iosSimulatorStreamRouteLayer,
   projectFaviconRouteLayer,
   serverDiscoveryRouteLayer,
   staticAndDevRouteLayer,

@@ -4,6 +4,7 @@ import { createRouter, RouterHistory } from "@tanstack/react-router";
 
 import { AppAtomRegistryProvider } from "./rpc/atomRegistry";
 import { routeTree } from "./routeTree.gen";
+import { parseQuerySearch, stringifyQuerySearch } from "./searchSerialization";
 
 export function getRouter(history: RouterHistory) {
   const queryClient = new QueryClient();
@@ -11,6 +12,8 @@ export function getRouter(history: RouterHistory) {
   return createRouter({
     routeTree,
     history,
+    parseSearch: parseQuerySearch,
+    stringifySearch: stringifyQuerySearch,
     context: {
       queryClient,
     },

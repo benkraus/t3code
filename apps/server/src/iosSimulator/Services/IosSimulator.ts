@@ -1,0 +1,18 @@
+import type { IosSimulatorInteractionInput, IosSimulatorStatus } from "@t3tools/contracts";
+import { ServiceMap } from "effect";
+import type { Effect } from "effect";
+
+export interface IosSimulatorFrame {
+  readonly contentType: "image/png";
+  readonly data: Uint8Array;
+}
+
+export interface IosSimulatorShape {
+  readonly getStatus: Effect.Effect<IosSimulatorStatus>;
+  readonly captureFrame: Effect.Effect<IosSimulatorFrame, Error>;
+  readonly sendInput: (input: IosSimulatorInteractionInput) => Effect.Effect<void, Error>;
+}
+
+export class IosSimulator extends ServiceMap.Service<IosSimulator, IosSimulatorShape>()(
+  "t3/iosSimulator/Services/IosSimulator",
+) {}

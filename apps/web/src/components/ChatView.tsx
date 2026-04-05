@@ -33,6 +33,7 @@ import {
   parseThreadPaneRouteSearch,
   stripBrowserSearchParams,
   stripDiffSearchParams,
+  stripSimulatorSearchParams,
 } from "../threadPaneRouteSearch";
 import {
   clampCollapsedComposerCursor,
@@ -834,6 +835,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const diffOpen = rawSearch.diff === "1";
   const browserOpen = rawSearch.browser === "1";
+  const simulatorOpen = rawSearch.simulator === "1";
   const activeThreadId = activeThread?.id ?? null;
   const existingOpenTerminalThreadIds = useMemo(() => {
     const existingThreadIds = new Set<ThreadId>([...serverThreadIds, ...draftThreadIds]);
@@ -1587,6 +1589,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
       },
     });
   }, [browserOpen, navigate, threadId]);
+  const onToggleSimulator = useCallback(() => {
+    void navigate({
+      to: "/$threadId",
+      params: { threadId },
+      search: (previous) => {
+        const rest = stripSimulatorSearchParams(previous);
+        return simulatorOpen ? { ...rest, simulator: undefined } : { ...rest, simulator: "1" };
+      },
+    });
+  }, [navigate, simulatorOpen, threadId]);
 
   const envLocked = Boolean(
     activeThread &&
@@ -3962,6 +3974,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           diffOpen={diffOpen}
           browserOpen={browserOpen}
           browserAvailable={isElectron}
+          simulatorOpen={simulatorOpen}
           onRunProjectScript={(script) => {
             void runProjectScript(script);
           }}
@@ -3971,6 +3984,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           onToggleTerminal={toggleTerminalVisibility}
           onToggleDiff={onToggleDiff}
           onToggleBrowser={onToggleBrowser}
+          onToggleSimulator={onToggleSimulator}
         />
       </header>
 

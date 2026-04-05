@@ -6,7 +6,7 @@ import {
 } from "@t3tools/contracts";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
-import { DiffIcon, GlobeIcon, TerminalSquareIcon } from "lucide-react";
+import { DiffIcon, GlobeIcon, SmartphoneIcon, TerminalSquareIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
@@ -32,6 +32,7 @@ interface ChatHeaderProps {
   diffOpen: boolean;
   browserOpen: boolean;
   browserAvailable: boolean;
+  simulatorOpen: boolean;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
@@ -39,6 +40,7 @@ interface ChatHeaderProps {
   onToggleTerminal: () => void;
   onToggleDiff: () => void;
   onToggleBrowser: () => void;
+  onToggleSimulator: () => void;
 }
 
 export const ChatHeader = memo(function ChatHeader({
@@ -59,6 +61,7 @@ export const ChatHeader = memo(function ChatHeader({
   diffOpen,
   browserOpen,
   browserAvailable,
+  simulatorOpen,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -66,6 +69,7 @@ export const ChatHeader = memo(function ChatHeader({
   onToggleTerminal,
   onToggleDiff,
   onToggleBrowser,
+  onToggleSimulator,
 }: ChatHeaderProps) {
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
@@ -108,6 +112,23 @@ export const ChatHeader = memo(function ChatHeader({
           />
         )}
         {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                className="shrink-0"
+                pressed={simulatorOpen}
+                onPressedChange={onToggleSimulator}
+                aria-label="Toggle iPhone simulator mirror"
+                variant="outline"
+                size="xs"
+              >
+                <SmartphoneIcon className="size-3" />
+              </Toggle>
+            }
+          />
+          <TooltipPopup side="bottom">Toggle iPhone simulator mirror</TooltipPopup>
+        </Tooltip>
         <Tooltip>
           <TooltipTrigger
             render={
