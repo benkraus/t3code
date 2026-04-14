@@ -1,8 +1,8 @@
-import { tmpdir } from "node:os";
 import type { IosSimulatorInteractionInput } from "@t3tools/contracts";
 import { Data, Effect, type FileSystem, type Path } from "effect";
 
 import { runProcess } from "../../processRunner";
+import { ensureSwiftHelperBinary } from "./swiftHelper";
 
 const IOS_SIMULATOR_INPUT_HELPER_VERSION = 2;
 const IOS_SIMULATOR_INPUT_HELPER_SOURCE = String.raw`
@@ -451,32 +451,12 @@ async function ensureHelperBinary(input: {
   readonly fileSystem: FileSystem.FileSystem;
   readonly path: Path.Path;
 }): Promise<string> {
-  const { fileSystem, path } = input;
-  const helperDirectory = path.join(tmpdir(), IOS_SIMULATOR_INPUT_HELPER_DIRECTORY);
-  const sourcePath = path.join(helperDirectory, `${IOS_SIMULATOR_INPUT_HELPER_BASENAME}.swift`);
-  const binaryPath = path.join(helperDirectory, IOS_SIMULATOR_INPUT_HELPER_BASENAME);
-
-  await Effect.runPromise(fileSystem.makeDirectory(helperDirectory, { recursive: true }));
-
-  const existingSource = await Effect.runPromise(
-    fileSystem.readFileString(sourcePath).pipe(Effect.catch(() => Effect.succeed(null))),
-  );
-  if (existingSource !== IOS_SIMULATOR_INPUT_HELPER_SOURCE) {
-    await Effect.runPromise(
-      fileSystem.writeFileString(sourcePath, IOS_SIMULATOR_INPUT_HELPER_SOURCE),
-    );
-  }
-
-  const binaryExists = await Effect.runPromise(fileSystem.exists(binaryPath));
-  if (binaryExists && existingSource === IOS_SIMULATOR_INPUT_HELPER_SOURCE) {
-    return binaryPath;
-  }
-
-  await runProcess("xcrun", ["swiftc", "-O", sourcePath, "-o", binaryPath], {
-    timeoutMs: 30_000,
+  return ensureSwiftHelperBinary({
+    ...input,
+    directory: IOS_SIMULATOR_INPUT_HELPER_DIRECTORY,
+    basename: IOS_SIMULATOR_INPUT_HELPER_BASENAME,
+    source: IOS_SIMULATOR_INPUT_HELPER_SOURCE,
   });
-
-  return binaryPath;
 }
 
 function getHelperBinary(input: {

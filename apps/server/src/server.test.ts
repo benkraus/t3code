@@ -267,6 +267,9 @@ const buildAppUnderTest = (options?: {
           captureFrame: Effect.fail(
             new Error("Boot an iPhone simulator on the host Mac to mirror it here."),
           ),
+          openMjpegStream: Effect.fail(
+            new Error("Boot an iPhone simulator on the host Mac to mirror it here."),
+          ),
           sendInput: () => Effect.void,
           ...options?.layers?.iosSimulator,
         }),
@@ -454,9 +457,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           iosSimulator: {
-            captureFrame: Effect.succeed({
-              contentType: "image/png",
-              data: Uint8Array.from([137, 80, 78, 71]),
+            openMjpegStream: Effect.succeed({
+              contentType: "multipart/x-mixed-replace; boundary=frame",
+              stream: Stream.succeed(
+                Uint8Array.from(
+                  Buffer.from(
+                    "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\n\r\njpeg\r\n",
+                    "utf8",
+                  ),
+                ),
+              ),
             }),
           },
         },
@@ -485,9 +495,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       });
 
       assert.equal(result.status, 200);
-      assert.include(result.contentType ?? "", "text/event-stream");
-      assert.include(result.chunk, "event: frame");
-      assert.include(result.chunk, '"imageBase64":"iVBORw=="');
+      assert.include(result.contentType ?? "", "multipart/x-mixed-replace");
+      assert.include(result.chunk, "--frame");
+      assert.include(result.chunk, "Content-Type: image/jpeg");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

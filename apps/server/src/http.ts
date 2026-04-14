@@ -1,5 +1,5 @@
 import Mime from "@effect/platform-node/Mime";
-import { Effect, FileSystem, Option, Path, Schedule, Schema, Stream } from "effect";
+import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import {
@@ -19,13 +19,6 @@ import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolve
 
 const PROJECT_FAVICON_CACHE_CONTROL = "public, max-age=3600";
 const FALLBACK_PROJECT_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#6b728080" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" data-fallback="project-favicon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/></svg>`;
-const IOS_SIMULATOR_STREAM_INTERVAL_MS = 250;
-const textEncoder = new TextEncoder();
-
-function encodeSseEvent(event: string, payload: unknown): Uint8Array {
-  return textEncoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
-}
-
 export function shouldRedirectHttpRequestToDevServer(remoteAddress: string | undefined): boolean {
   if (!remoteAddress) {
     return true;
@@ -110,40 +103,34 @@ export const iosSimulatorStreamRouteLayer = HttpRouter.add(
   "/api/ios-simulator/stream",
   Effect.gen(function* () {
     const simulator = yield* IosSimulator;
-
-    const stream = Stream.fromEffectSchedule(
-      simulator.captureFrame.pipe(
-        Effect.map((frame) =>
-          encodeSseEvent("frame", {
-            contentType: frame.contentType,
-            imageBase64: Buffer.from(frame.data).toString("base64"),
-            capturedAt: Date.now(),
-          }),
-        ),
-        Effect.catch((error) =>
-          Effect.succeed(
-            encodeSseEvent("status", {
-              available: false,
-              message:
-                error instanceof Error
-                  ? error.message
-                  : "Unable to capture an iPhone simulator frame from the host Mac.",
-            }),
+    return yield* simulator.openMjpegStream.pipe(
+      Effect.map((payload) =>
+        HttpServerResponse.stream(payload.stream, {
+          status: 200,
+          contentType: payload.contentType,
+          headers: {
+            "Cache-Control": "no-store",
+            Connection: "keep-alive",
+            "X-Accel-Buffering": "no",
+          },
+        }),
+      ),
+      Effect.catch((error) =>
+        Effect.succeed(
+          HttpServerResponse.text(
+            error instanceof Error
+              ? error.message
+              : "Unable to capture an iPhone simulator stream from the host Mac.",
+            {
+              status: 503,
+              headers: {
+                "Cache-Control": "no-store",
+              },
+            },
           ),
         ),
       ),
-      Schedule.spaced(`${IOS_SIMULATOR_STREAM_INTERVAL_MS} millis`),
     );
-
-    return HttpServerResponse.stream(stream, {
-      status: 200,
-      contentType: "text/event-stream; charset=utf-8",
-      headers: {
-        "Cache-Control": "no-store",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      },
-    });
   }),
 );
 

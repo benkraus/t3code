@@ -6,7 +6,7 @@ import {
   RefreshCwIcon,
   SmartphoneIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { resolveServerHttpOrigin } from "../serverConnection";
 import { getWsRpcClient } from "../wsRpcClient";
@@ -43,7 +43,14 @@ function buildServerUrl(pathname: string, search?: URLSearchParams): string {
     return pathname;
   }
 
-  const origin = resolveServerHttpOrigin() || window.location.origin;
+  const resolvedServerOrigin = resolveServerHttpOrigin();
+  const origin =
+    pathname.startsWith("/api/") &&
+    /^https?:$/.test(window.location.protocol) &&
+    resolvedServerOrigin.length > 0 &&
+    resolvedServerOrigin !== window.location.origin
+      ? window.location.origin
+      : resolvedServerOrigin || window.location.origin;
   const url = new URL(pathname, origin || window.location.origin);
   if (search) {
     url.search = search.toString();
@@ -95,8 +102,29 @@ function gestureDistancePx(input: GestureState, clientX: number, clientY: number
   return Math.hypot(clientX - input.startClientX, clientY - input.startClientY);
 }
 
-export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?: () => void }) {
-  const { mode, onClose } = props;
+function revokeObjectUrl(objectUrl: string | null | undefined): void {
+  if (!objectUrl || typeof URL === "undefined" || !objectUrl.startsWith("blob:")) {
+    return;
+  }
+
+  URL.revokeObjectURL(objectUrl);
+}
+
+function decodeBase64Image(base64: string, contentType: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type: contentType });
+}
+
+export default function SimulatorPane(props: {
+  mode: SimulatorPaneMode;
+  onClose?: () => void;
+  active?: boolean;
+}) {
+  const { mode, onClose, active = true } = props;
   const [connectionMode, setConnectionMode] = useState<"local" | "remote" | "unknown">(() => {
     if (typeof window === "undefined") {
       return "local";
@@ -108,17 +136,66 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
   const [statusError, setStatusError] = useState<string | null>(null);
   const [frameError, setFrameError] = useState<string | null>(null);
   const [interactionError, setInteractionError] = useState<string | null>(null);
-  const [frameSrc, setFrameSrc] = useState<string | null>(null);
+  const [hasFrame, setHasFrame] = useState(false);
   const [lastFrameLoadedAt, setLastFrameLoadedAt] = useState<number | null>(null);
   const [frameAspectRatio, setFrameAspectRatio] = useState(DEFAULT_FRAME_ASPECT_RATIO);
   const [isSendingInput, setIsSendingInput] = useState(false);
-  const [streamRevision, setStreamRevision] = useState(0);
+  const [frameRefreshRevision, setFrameRefreshRevision] = useState(0);
   const [isStreamConnected, setIsStreamConnected] = useState(false);
+  const frameImageRef = useRef<HTMLImageElement | null>(null);
   const interactionSurfaceRef = useRef<HTMLDivElement | null>(null);
   const gestureRef = useRef<GestureState | null>(null);
-  const hasReceivedFrameRef = useRef(false);
+  const activeFrameObjectUrlRef = useRef<string | null>(null);
+  const staleFrameObjectUrlsRef = useRef<string[]>([]);
   const rpcClientRef = useRef(getWsRpcClient());
   const isRemoteConnection = connectionMode === "remote";
+
+  const clearDisplayedFrame = useEffectEvent(() => {
+    setHasFrame(false);
+    setLastFrameLoadedAt(null);
+    setFrameAspectRatio(DEFAULT_FRAME_ASPECT_RATIO);
+    setIsStreamConnected(false);
+
+    if (frameImageRef.current) {
+      frameImageRef.current.removeAttribute("src");
+    }
+
+    revokeObjectUrl(activeFrameObjectUrlRef.current);
+    activeFrameObjectUrlRef.current = null;
+
+    for (const objectUrl of staleFrameObjectUrlsRef.current) {
+      revokeObjectUrl(objectUrl);
+    }
+    staleFrameObjectUrlsRef.current = [];
+  });
+
+  const flushStaleFrameObjectUrls = useEffectEvent(() => {
+    for (const objectUrl of staleFrameObjectUrlsRef.current) {
+      revokeObjectUrl(objectUrl);
+    }
+    staleFrameObjectUrlsRef.current = [];
+  });
+
+  const commitFrameObjectUrl = useEffectEvent((objectUrl: string, capturedAt: number | null) => {
+    const previousObjectUrl = activeFrameObjectUrlRef.current;
+    if (previousObjectUrl) {
+      staleFrameObjectUrlsRef.current.push(previousObjectUrl);
+    }
+
+    activeFrameObjectUrlRef.current = objectUrl;
+    if (frameImageRef.current) {
+      frameImageRef.current.src = objectUrl;
+    }
+
+    setHasFrame(true);
+    setFrameError(null);
+    setIsStreamConnected(true);
+    if (capturedAt !== null) {
+      setLastFrameLoadedAt(capturedAt);
+    }
+  });
+
+  useEffect(() => () => clearDisplayedFrame(), []);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.desktopBridge?.getConnectionSettings) {
@@ -148,6 +225,11 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
   }, []);
 
   useEffect(() => {
+    if (!active) {
+      clearDisplayedFrame();
+      return;
+    }
+
     if (connectionMode === "unknown") {
       return;
     }
@@ -166,11 +248,8 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
           setStatus(nextStatus);
           setStatusError(null);
           if (!nextStatus.available) {
-            setFrameSrc(null);
+            clearDisplayedFrame();
             setFrameError(null);
-            setLastFrameLoadedAt(null);
-            setIsStreamConnected(false);
-            hasReceivedFrameRef.current = false;
           }
           if (nextStatus.interactionAvailable) {
             setInteractionError(null);
@@ -197,11 +276,8 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
         setStatus(nextStatus);
         setStatusError(null);
         if (!nextStatus.available) {
-          setFrameSrc(null);
+          clearDisplayedFrame();
           setFrameError(null);
-          setLastFrameLoadedAt(null);
-          setIsStreamConnected(false);
-          hasReceivedFrameRef.current = false;
         }
         if (nextStatus.interactionAvailable) {
           setInteractionError(null);
@@ -226,165 +302,121 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
       initialController.abort();
       window.clearInterval(intervalId);
     };
-  }, [connectionMode, isRemoteConnection]);
+  }, [active, connectionMode, isRemoteConnection]);
 
   useEffect(() => {
+    if (!active) {
+      clearDisplayedFrame();
+      return;
+    }
+
     if (connectionMode === "unknown") {
       return;
     }
 
     if (!status?.available) {
-      setFrameSrc(null);
-      setIsStreamConnected(false);
-      hasReceivedFrameRef.current = false;
+      clearDisplayedFrame();
       return;
     }
 
-    if (isRemoteConnection) {
-      let cancelled = false;
-      let inFlight = false;
+    if (!isRemoteConnection) {
+      const streamUrl = buildServerUrl(
+        "/api/ios-simulator/stream",
+        new URLSearchParams({ r: String(frameRefreshRevision) }),
+      );
+      const frameImage = frameImageRef.current;
 
-      const loadRemoteFrame = async () => {
-        if (cancelled || inFlight) {
-          return;
-        }
-
-        inFlight = true;
-        try {
-          const frame = await rpcClientRef.current.simulator.captureFrame();
-          if (cancelled) {
-            return;
-          }
-
-          hasReceivedFrameRef.current = true;
-          setFrameSrc(`data:${frame.contentType};base64,${frame.imageBase64}`);
-          setFrameError(null);
-          setIsStreamConnected(true);
-          if (Number.isFinite(frame.capturedAt)) {
-            setLastFrameLoadedAt(frame.capturedAt);
-          }
-        } catch (error) {
-          if (cancelled) {
-            return;
-          }
-
-          setIsStreamConnected(false);
-          setFrameError(
-            error instanceof Error
-              ? error.message
-              : "The host Mac did not return a simulator frame.",
-          );
-        } finally {
-          inFlight = false;
-        }
-      };
-
-      void loadRemoteFrame();
-      const intervalId = window.setInterval(() => {
-        void loadRemoteFrame();
-      }, REMOTE_FRAME_REFRESH_MS);
+      setHasFrame(false);
+      setIsStreamConnected(false);
+      setFrameError(null);
+      if (frameImage) {
+        frameImage.src = streamUrl;
+      }
 
       return () => {
-        cancelled = true;
-        window.clearInterval(intervalId);
+        if (frameImage?.src === streamUrl) {
+          frameImage.removeAttribute("src");
+        }
         setIsStreamConnected(false);
       };
     }
 
     let cancelled = false;
-    const source = new EventSource(
-      buildServerUrl(
-        "/api/ios-simulator/stream",
-        new URLSearchParams({ r: String(streamRevision) }),
-      ),
-    );
+    let inFlight = false;
+    let pendingController: AbortController | null = null;
 
-    const handleFrame = (event: MessageEvent<string>) => {
-      if (cancelled) {
+    const loadFrame = async () => {
+      if (cancelled || inFlight) {
         return;
       }
 
+      inFlight = true;
+      const controller = new AbortController();
+      pendingController = controller;
       try {
-        const payload = JSON.parse(event.data) as {
-          contentType?: unknown;
-          imageBase64?: unknown;
-          capturedAt?: unknown;
-        };
-        const contentType =
-          typeof payload.contentType === "string" && payload.contentType.length > 0
-            ? payload.contentType
-            : "image/png";
-        const imageBase64 =
-          typeof payload.imageBase64 === "string" && payload.imageBase64.length > 0
-            ? payload.imageBase64
-            : null;
-        if (!imageBase64) {
-          throw new Error("The host Mac did not return a simulator frame.");
+        if (isRemoteConnection) {
+          const frame = await rpcClientRef.current.simulator.captureFrame();
+          if (cancelled) {
+            return;
+          }
+
+          const frameObjectUrl = URL.createObjectURL(
+            decodeBase64Image(frame.imageBase64, frame.contentType),
+          );
+          commitFrameObjectUrl(
+            frameObjectUrl,
+            Number.isFinite(frame.capturedAt) ? frame.capturedAt : Date.now(),
+          );
+          return;
         }
 
-        hasReceivedFrameRef.current = true;
-        setFrameSrc(`data:${contentType};base64,${imageBase64}`);
-        setFrameError(null);
-        setIsStreamConnected(true);
-        if (typeof payload.capturedAt === "number" && Number.isFinite(payload.capturedAt)) {
-          setLastFrameLoadedAt(payload.capturedAt);
+        const response = await fetch(buildServerUrl("/api/ios-simulator/frame"), {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const message = (await response.text()).trim();
+          throw new Error(
+            message.length > 0 ? message : `Simulator frame request failed (${response.status}).`,
+          );
         }
+
+        const frameBlob = await response.blob();
+        if (cancelled) {
+          return;
+        }
+
+        const frameObjectUrl = URL.createObjectURL(frameBlob);
+        commitFrameObjectUrl(frameObjectUrl, Date.now());
       } catch (error) {
+        if (cancelled || isAbortError(error)) {
+          return;
+        }
+
+        setIsStreamConnected(false);
         setFrameError(
           error instanceof Error ? error.message : "The host Mac did not return a simulator frame.",
         );
-      }
-    };
-
-    const handleStatus = (event: MessageEvent<string>) => {
-      if (cancelled) {
-        return;
-      }
-
-      try {
-        const payload = JSON.parse(event.data) as {
-          available?: unknown;
-          message?: unknown;
-        };
-        if (payload.available === false) {
-          setIsStreamConnected(false);
-          setFrameError(
-            typeof payload.message === "string" && payload.message.length > 0
-              ? payload.message
-              : "Waiting for the host Mac to produce a simulator frame.",
-          );
+      } finally {
+        if (pendingController === controller) {
+          pendingController = null;
         }
-      } catch {
-        setFrameError("Waiting for the host Mac to produce a simulator frame.");
+        inFlight = false;
       }
     };
 
-    const handleOpen = () => {
-      if (cancelled) {
-        return;
-      }
-      setIsStreamConnected(true);
-    };
-    const handleError = () => {
-      if (cancelled) {
-        return;
-      }
-      setIsStreamConnected(false);
-      if (!hasReceivedFrameRef.current) {
-        setFrameError("Live stream reconnecting to the host Mac.");
-      }
-    };
-    source.addEventListener("open", handleOpen);
-    source.addEventListener("error", handleError);
-    source.addEventListener("frame", handleFrame as EventListener);
-    source.addEventListener("status", handleStatus as EventListener);
+    void loadFrame();
+    const intervalId = window.setInterval(() => {
+      void loadFrame();
+    }, REMOTE_FRAME_REFRESH_MS);
 
     return () => {
       cancelled = true;
-      source.close();
+      pendingController?.abort();
       setIsStreamConnected(false);
+      window.clearInterval(intervalId);
     };
-  }, [connectionMode, isRemoteConnection, status?.available, streamRevision]);
+  }, [active, connectionMode, frameRefreshRevision, isRemoteConnection, status?.available]);
 
   const sendInput = async (input: IosSimulatorInteractionInput) => {
     try {
@@ -392,7 +424,6 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
       if (isRemoteConnection) {
         await rpcClientRef.current.simulator.sendInput(input);
         setInteractionError(null);
-        setStreamRevision((current) => current + 1);
         return;
       }
 
@@ -413,7 +444,6 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
       }
 
       setInteractionError(null);
-      setStreamRevision((current) => current + 1);
     } catch (error) {
       if (isAbortError(error)) {
         return;
@@ -578,7 +608,7 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
                 setFrameError(null);
                 setStatusError(null);
                 setInteractionError(null);
-                setStreamRevision((current) => current + 1);
+                setFrameRefreshRevision((current) => current + 1);
               }}
             >
               <RefreshCwIcon className="size-3.5" />
@@ -608,11 +638,11 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
                   ? "WebSocket bridge mirror with touch forwarding"
                   : "Reconnecting WebSocket bridge"
                 : isStreamConnected
-                  ? "Server-pushed live stream with touch forwarding"
-                  : "Reconnecting live stream"
+                  ? "Direct frame mirror with touch forwarding"
+                  : "Refreshing direct mirror"
               : isRemoteConnection
                 ? "WebSocket bridge mirror"
-                : "Server-pushed mirror"}
+                : "Direct frame mirror"}
           </span>
         </div>
       </div>
@@ -626,25 +656,33 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
               className="relative overflow-hidden rounded-[2.35rem] bg-[#030303]"
               style={{ aspectRatio: String(frameAspectRatio) }}
             >
-              {frameSrc ? (
+              <img
+                ref={frameImageRef}
+                alt="Live iPhone simulator"
+                className={cn(
+                  "h-full w-full object-contain",
+                  hasFrame ? "opacity-100" : "pointer-events-none opacity-0",
+                )}
+                decoding="async"
+                onLoad={(event) => {
+                  const { naturalWidth, naturalHeight } = event.currentTarget;
+                  if (naturalWidth > 0 && naturalHeight > 0) {
+                    setFrameAspectRatio(naturalWidth / naturalHeight);
+                  }
+                  setHasFrame(true);
+                  setIsStreamConnected(true);
+                  setLastFrameLoadedAt(Date.now());
+                  flushStaleFrameObjectUrls();
+                  setFrameError(null);
+                }}
+                onError={() => {
+                  setHasFrame(false);
+                  setIsStreamConnected(false);
+                  setFrameError("The host Mac did not return a simulator frame.");
+                }}
+              />
+              {hasFrame ? (
                 <>
-                  <img
-                    key={frameSrc}
-                    src={frameSrc}
-                    alt="Live iPhone simulator"
-                    className="h-full w-full object-contain"
-                    onLoad={(event) => {
-                      const { naturalWidth, naturalHeight } = event.currentTarget;
-                      if (naturalWidth > 0 && naturalHeight > 0) {
-                        setFrameAspectRatio(naturalWidth / naturalHeight);
-                      }
-                      setLastFrameLoadedAt(Date.now());
-                      setFrameError(null);
-                    }}
-                    onError={() => {
-                      setFrameError("The host Mac did not return a simulator frame.");
-                    }}
-                  />
                   <div
                     ref={interactionSurfaceRef}
                     className={cn(

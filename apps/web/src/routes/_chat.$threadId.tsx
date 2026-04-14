@@ -302,7 +302,7 @@ const SimulatorPaneInlineSidebar = (props: {
         }}
       >
         {renderSimulatorContent ? (
-          <SimulatorPane mode="sidebar" onClose={onCloseSimulator} />
+          <SimulatorPane mode="sidebar" onClose={onCloseSimulator} active={simulatorOpen} />
         ) : null}
         <SidebarRail />
       </Sidebar>
@@ -463,7 +463,7 @@ function ChatThreadRouteView() {
       </DiffPanelSheet>
       <SimulatorPaneSheet simulatorOpen={simulatorOpen} onCloseSimulator={closeSimulator}>
         {shouldRenderSimulatorContent ? (
-          <SimulatorPane mode="sheet" onClose={closeSimulator} />
+          <SimulatorPane mode="sheet" onClose={closeSimulator} active={simulatorOpen} />
         ) : null}
       </SimulatorPaneSheet>
     </>

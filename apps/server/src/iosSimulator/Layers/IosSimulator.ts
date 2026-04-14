@@ -1,14 +1,17 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { readFile, rm } from "node:fs/promises";
 import type { IosSimulatorInteractionInput, IosSimulatorStatus } from "@t3tools/contracts";
-import { Data, Effect, FileSystem, Layer, Path } from "effect";
+import { Data, Effect, FileSystem, Layer, Path, Stream } from "effect";
 
 import { runProcess } from "../../processRunner";
 import {
   IosSimulator,
   type IosSimulatorFrame,
+  type IosSimulatorMultipartStream,
   type IosSimulatorShape,
 } from "../Services/IosSimulator";
 import { getIosSimulatorInteractionStatus, sendIosSimulatorInteraction } from "./interactionHelper";
+import { getIosSimulatorMjpegStream, IOS_SIMULATOR_MJPEG_CONTENT_TYPE } from "./streamHelper";
 
 interface BootedIphoneDevice {
   readonly name: string;
@@ -266,6 +269,35 @@ export function captureBootedIphoneSimulatorFrame(input?: {
   };
 }
 
+async function captureBootedIphoneSimulatorJpegFrame(input: {
+  readonly udid: string;
+  readonly filePath: string;
+}): Promise<Uint8Array> {
+  await runProcess(
+    "xcrun",
+    ["simctl", "io", input.udid, "screenshot", "--type=jpeg", input.filePath],
+    {
+      timeoutMs: 10_000,
+    },
+  );
+
+  const data = new Uint8Array(await readFile(input.filePath));
+  if (data.byteLength === 0) {
+    throw new Error("The simulator screenshot command returned an empty JPEG frame.");
+  }
+
+  return data;
+}
+
+function encodeMultipartJpegFrame(frame: Uint8Array): Uint8Array {
+  const header = Buffer.from(
+    `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.byteLength}\r\n\r\n`,
+    "utf8",
+  );
+  const footer = Buffer.from("\r\n", "utf8");
+  return Buffer.concat([header, Buffer.from(frame), footer]);
+}
+
 export const makeIosSimulator = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -394,6 +426,59 @@ export const makeIosSimulator = Effect.gen(function* () {
     }),
   );
 
+  const openMjpegStream: IosSimulatorShape["openMjpegStream"] = Effect.gen(function* () {
+    const status = yield* inspectStatus;
+    if (!status.available || !status.udid || !status.deviceName) {
+      return yield* Effect.fail(new Error(status.message));
+    }
+    const udid = status.udid;
+
+    const preferredStream = yield* getIosSimulatorMjpegStream({
+      fileSystem,
+      path,
+      deviceName: status.deviceName,
+    }).pipe(
+      Effect.mapError((error) => new Error(error.message)),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    if (preferredStream) {
+      return preferredStream;
+    }
+    const tempDirectory = yield* fileSystem.makeTempDirectory({
+      prefix: "t3-ios-simulator-stream-",
+    });
+    const screenshotPath = path.join(tempDirectory, "frame.jpg");
+
+    const fallbackStream = Stream.fromAsyncIterable(
+      {
+        async *[Symbol.asyncIterator]() {
+          try {
+            while (true) {
+              const frame = await captureBootedIphoneSimulatorJpegFrame({
+                udid,
+                filePath: screenshotPath,
+              });
+              yield encodeMultipartJpegFrame(frame);
+              await new Promise((resolve) => setTimeout(resolve, 250));
+            }
+          } catch (error) {
+            throw error instanceof Error
+              ? error
+              : new Error("Unable to capture an iPhone simulator frame from the host Mac.");
+          } finally {
+            await rm(tempDirectory, { recursive: true, force: true }).catch(() => undefined);
+          }
+        },
+      },
+      (cause) => new Error(String(cause)),
+    );
+
+    return {
+      contentType: IOS_SIMULATOR_MJPEG_CONTENT_TYPE,
+      stream: fallbackStream,
+    } satisfies IosSimulatorMultipartStream;
+  });
+
   const sendInput: IosSimulatorShape["sendInput"] = (input: IosSimulatorInteractionInput) =>
     Effect.gen(function* () {
       const status = yield* inspectStatus;
@@ -412,6 +497,7 @@ export const makeIosSimulator = Effect.gen(function* () {
   return {
     getStatus: inspectStatus,
     captureFrame,
+    openMjpegStream,
     sendInput,
   } satisfies IosSimulatorShape;
 });
