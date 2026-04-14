@@ -41,7 +41,7 @@ function buildServerUrl(pathname: string, search?: URLSearchParams): string {
     return pathname;
   }
 
-  const origin = import.meta.env.DEV ? window.location.origin : resolveServerHttpOrigin();
+  const origin = resolveServerHttpOrigin() || window.location.origin;
   const url = new URL(pathname, origin || window.location.origin);
   if (search) {
     url.search = search.toString();
@@ -419,7 +419,10 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
     ? isSendingInput
       ? "Forwarding touch input to the host Mac."
       : "Tap or drag on the mirrored screen to control the host simulator."
-    : (status?.interactionMessage ??
+    : (interactionError ??
+      frameError ??
+      statusError ??
+      status?.interactionMessage ??
       "Remote mirror is live. Interaction is not ready on the host.");
 
   return (
