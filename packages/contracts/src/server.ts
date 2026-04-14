@@ -258,3 +258,10 @@ export const IosSimulatorInteractionInput = Schema.Union([
   IosSimulatorSwipeInput,
 ]);
 export type IosSimulatorInteractionInput = typeof IosSimulatorInteractionInput.Type;
+
+export const IosSimulatorFrame = Schema.Struct({
+  contentType: Schema.Literal("image/png"),
+  imageBase64: Schema.String,
+  capturedAt: Schema.Number,
+});
+export type IosSimulatorFrame = typeof IosSimulatorFrame.Type;

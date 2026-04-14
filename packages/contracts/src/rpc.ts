@@ -61,6 +61,9 @@ import {
   TerminalWriteInput,
 } from "./terminal";
 import {
+  IosSimulatorFrame,
+  IosSimulatorInteractionInput,
+  IosSimulatorStatus,
   ServerConfigStreamEvent,
   ServerConfig,
   ServerLifecycleStreamEvent,
@@ -109,6 +112,11 @@ export const WS_METHODS = {
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
 
+  // iOS simulator methods
+  iosSimulatorGetStatus: "iosSimulator.getStatus",
+  iosSimulatorCaptureFrame: "iosSimulator.captureFrame",
+  iosSimulatorSendInput: "iosSimulator.sendInput",
+
   // Streaming subscriptions
   subscribeOrchestrationDomainEvents: "subscribeOrchestrationDomainEvents",
   subscribeTerminalEvents: "subscribeTerminalEvents",
@@ -143,6 +151,22 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
   payload: Schema.Struct({ patch: ServerSettingsPatch }),
   success: ServerSettings,
   error: ServerSettingsError,
+});
+
+export const WsIosSimulatorGetStatusRpc = Rpc.make(WS_METHODS.iosSimulatorGetStatus, {
+  payload: Schema.Struct({}),
+  success: IosSimulatorStatus,
+});
+
+export const WsIosSimulatorCaptureFrameRpc = Rpc.make(WS_METHODS.iosSimulatorCaptureFrame, {
+  payload: Schema.Struct({}),
+  success: IosSimulatorFrame,
+  error: Schema.String,
+});
+
+export const WsIosSimulatorSendInputRpc = Rpc.make(WS_METHODS.iosSimulatorSendInput, {
+  payload: IosSimulatorInteractionInput,
+  error: Schema.String,
 });
 
 export const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntries, {
@@ -327,6 +351,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpsertKeybindingRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsIosSimulatorGetStatusRpc,
+  WsIosSimulatorCaptureFrameRpc,
+  WsIosSimulatorSendInputRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
   WsShellOpenInEditorRpc,

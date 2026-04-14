@@ -2,6 +2,7 @@ import { Effect, Layer, Option, Queue, Ref, Schema, Stream } from "effect";
 import {
   type GitActionProgressEvent,
   type GitManagerServiceError,
+  type IosSimulatorFrame,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   OrchestrationGetFullThreadDiffError,
@@ -24,6 +25,7 @@ import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore";
 import { GitManager } from "./git/Services/GitManager";
 import { Keybindings } from "./keybindings";
+import { IosSimulator } from "./iosSimulator/Services/IosSimulator";
 import { Open, resolveAvailableEditors } from "./open";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
@@ -54,6 +56,7 @@ const WsRpcLayer = WsRpcGroup.toLayer(
     const terminalManager = yield* TerminalManager;
     const providerRegistry = yield* ProviderRegistry;
     const config = yield* ServerConfig;
+    const iosSimulator = yield* IosSimulator;
     const lifecycleEvents = yield* ServerLifecycleEvents;
     const serverSettings = yield* ServerSettingsService;
     const startup = yield* ServerRuntimeStartup;
@@ -263,6 +266,42 @@ const WsRpcLayer = WsRpcGroup.toLayer(
         observeRpcEffect(WS_METHODS.serverUpdateSettings, serverSettings.updateSettings(patch), {
           "rpc.aggregate": "server",
         }),
+      [WS_METHODS.iosSimulatorGetStatus]: (_input) =>
+        observeRpcEffect(WS_METHODS.iosSimulatorGetStatus, iosSimulator.getStatus, {
+          "rpc.aggregate": "iosSimulator",
+        }),
+      [WS_METHODS.iosSimulatorCaptureFrame]: (_input) =>
+        observeRpcEffect(
+          WS_METHODS.iosSimulatorCaptureFrame,
+          iosSimulator.captureFrame.pipe(
+            Effect.map(
+              (frame) =>
+                ({
+                  contentType: frame.contentType,
+                  imageBase64: Buffer.from(frame.data).toString("base64"),
+                  capturedAt: Date.now(),
+                }) satisfies IosSimulatorFrame,
+            ),
+            Effect.mapError((error) =>
+              error instanceof Error
+                ? error.message
+                : "Unable to capture an iPhone simulator frame from the host Mac.",
+            ),
+          ),
+          { "rpc.aggregate": "iosSimulator" },
+        ),
+      [WS_METHODS.iosSimulatorSendInput]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.iosSimulatorSendInput,
+          iosSimulator.sendInput(input).pipe(
+            Effect.mapError((error) =>
+              error instanceof Error
+                ? error.message
+                : "Unable to forward input to the host iPhone simulator.",
+            ),
+          ),
+          { "rpc.aggregate": "iosSimulator" },
+        ),
       [WS_METHODS.projectsSearchEntries]: (input) =>
         observeRpcEffect(
           WS_METHODS.projectsSearchEntries,

@@ -9,6 +9,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { resolveServerHttpOrigin } from "../serverConnection";
+import { getWsRpcClient } from "../wsRpcClient";
 import { Button } from "./ui/button";
 import { cn } from "~/lib/utils";
 
@@ -20,6 +21,7 @@ const TAP_MAX_MOVEMENT_PX = 14;
 const TAP_MAX_DURATION_MS = 280;
 const MIN_SWIPE_DURATION_MS = 70;
 const MAX_SWIPE_DURATION_MS = 900;
+const REMOTE_FRAME_REFRESH_MS = 350;
 
 interface GestureState {
   readonly pointerId: number;
@@ -95,6 +97,13 @@ function gestureDistancePx(input: GestureState, clientX: number, clientY: number
 
 export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?: () => void }) {
   const { mode, onClose } = props;
+  const [connectionMode, setConnectionMode] = useState<"local" | "remote" | "unknown">(() => {
+    if (typeof window === "undefined") {
+      return "local";
+    }
+
+    return window.desktopBridge ? "unknown" : "local";
+  });
   const [status, setStatus] = useState<IosSimulatorStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [frameError, setFrameError] = useState<string | null>(null);
@@ -108,20 +117,73 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
   const interactionSurfaceRef = useRef<HTMLDivElement | null>(null);
   const gestureRef = useRef<GestureState | null>(null);
   const hasReceivedFrameRef = useRef(false);
+  const rpcClientRef = useRef(getWsRpcClient());
+  const isRemoteConnection = connectionMode === "remote";
 
   useEffect(() => {
+    if (typeof window === "undefined" || !window.desktopBridge?.getConnectionSettings) {
+      setConnectionMode("local");
+      return;
+    }
+
+    let cancelled = false;
+    void window.desktopBridge
+      .getConnectionSettings()
+      .then((settings) => {
+        if (cancelled) {
+          return;
+        }
+        setConnectionMode(settings.mode === "remote" ? "remote" : "local");
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setConnectionMode("local");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (connectionMode === "unknown") {
+      return;
+    }
+
     let cancelled = false;
     const initialController = new AbortController();
 
     const loadStatus = async (signal?: AbortSignal) => {
       try {
+        if (isRemoteConnection) {
+          const nextStatus = await rpcClientRef.current.simulator.getStatus();
+          if (cancelled) {
+            return;
+          }
+
+          setStatus(nextStatus);
+          setStatusError(null);
+          if (!nextStatus.available) {
+            setFrameSrc(null);
+            setFrameError(null);
+            setLastFrameLoadedAt(null);
+            setIsStreamConnected(false);
+            hasReceivedFrameRef.current = false;
+          }
+          if (nextStatus.interactionAvailable) {
+            setInteractionError(null);
+          }
+          return;
+        }
+
         const requestInit: RequestInit = {
           cache: "no-store",
         };
         if (signal) {
           requestInit.signal = signal;
         }
-
         const response = await fetch(buildServerUrl("/api/ios-simulator/status"), requestInit);
         if (!response.ok) {
           throw new Error(`Simulator status request failed (${response.status}).`);
@@ -164,14 +226,69 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
       initialController.abort();
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [connectionMode, isRemoteConnection]);
 
   useEffect(() => {
+    if (connectionMode === "unknown") {
+      return;
+    }
+
     if (!status?.available) {
       setFrameSrc(null);
       setIsStreamConnected(false);
       hasReceivedFrameRef.current = false;
       return;
+    }
+
+    if (isRemoteConnection) {
+      let cancelled = false;
+      let inFlight = false;
+
+      const loadRemoteFrame = async () => {
+        if (cancelled || inFlight) {
+          return;
+        }
+
+        inFlight = true;
+        try {
+          const frame = await rpcClientRef.current.simulator.captureFrame();
+          if (cancelled) {
+            return;
+          }
+
+          hasReceivedFrameRef.current = true;
+          setFrameSrc(`data:${frame.contentType};base64,${frame.imageBase64}`);
+          setFrameError(null);
+          setIsStreamConnected(true);
+          if (Number.isFinite(frame.capturedAt)) {
+            setLastFrameLoadedAt(frame.capturedAt);
+          }
+        } catch (error) {
+          if (cancelled) {
+            return;
+          }
+
+          setIsStreamConnected(false);
+          setFrameError(
+            error instanceof Error
+              ? error.message
+              : "The host Mac did not return a simulator frame.",
+          );
+        } finally {
+          inFlight = false;
+        }
+      };
+
+      void loadRemoteFrame();
+      const intervalId = window.setInterval(() => {
+        void loadRemoteFrame();
+      }, REMOTE_FRAME_REFRESH_MS);
+
+      return () => {
+        cancelled = true;
+        window.clearInterval(intervalId);
+        setIsStreamConnected(false);
+      };
     }
 
     let cancelled = false;
@@ -267,11 +384,18 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
       source.close();
       setIsStreamConnected(false);
     };
-  }, [status?.available, streamRevision]);
+  }, [connectionMode, isRemoteConnection, status?.available, streamRevision]);
 
   const sendInput = async (input: IosSimulatorInteractionInput) => {
     try {
       setIsSendingInput(true);
+      if (isRemoteConnection) {
+        await rpcClientRef.current.simulator.sendInput(input);
+        setInteractionError(null);
+        setStreamRevision((current) => current + 1);
+        return;
+      }
+
       const response = await fetch(buildServerUrl("/api/ios-simulator/input"), {
         method: "POST",
         cache: "no-store",
@@ -479,10 +603,16 @@ export default function SimulatorPane(props: { mode: SimulatorPaneMode; onClose?
           </span>
           <span className="truncate">
             {interactionEnabled
-              ? isStreamConnected
-                ? "Server-pushed live stream with touch forwarding"
-                : "Reconnecting live stream"
-              : "Server-pushed mirror"}
+              ? isRemoteConnection
+                ? isStreamConnected
+                  ? "WebSocket bridge mirror with touch forwarding"
+                  : "Reconnecting WebSocket bridge"
+                : isStreamConnected
+                  ? "Server-pushed live stream with touch forwarding"
+                  : "Reconnecting live stream"
+              : isRemoteConnection
+                ? "WebSocket bridge mirror"
+                : "Server-pushed mirror"}
           </span>
         </div>
       </div>
