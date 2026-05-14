@@ -1,9 +1,11 @@
 import {
   ChevronDownIcon,
   ChevronsLeftRightEllipsisIcon,
+  NetworkIcon,
   PlusIcon,
   QrCodeIcon,
   RefreshCwIcon,
+  SearchIcon,
   TerminalIcon,
   TriangleAlertIcon,
 } from "lucide-react";
@@ -24,6 +26,7 @@ import {
   type AuthEnvironmentScope,
   type AuthPairingLink,
   type AdvertisedEndpoint,
+  type DesktopDiscoveredHost,
   type DesktopDiscoveredSshHost,
   type DesktopSshEnvironmentTarget,
   type DesktopServerExposureState,
@@ -133,6 +136,8 @@ import { webRuntime } from "~/lib/runtime";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 
 const DEFAULT_TAILSCALE_SERVE_PORT = 443;
+
+type SavedBackendMode = "remote" | "ssh" | "tailnet";
 
 const accessTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -613,6 +618,21 @@ function isHostedAppPairingUrl(value: string): boolean {
     return url.pathname === "/pair" && url.searchParams.has("host");
   } catch {
     return false;
+  }
+}
+
+function resolveTailscaleDiscoveryPort(rawHost: string): number | undefined {
+  const trimmedHost = rawHost.trim();
+  if (!trimmedHost) {
+    return undefined;
+  }
+
+  try {
+    const parsed = new URL(trimmedHost.includes("://") ? trimmedHost : `http://${trimmedHost}`);
+    const port = Number.parseInt(parsed.port, 10);
+    return Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -2013,13 +2033,19 @@ export function ConnectionsSettings() {
   >(null);
   const [isRevokingOtherDesktopClients, setIsRevokingOtherDesktopClients] = useState(false);
   const [addBackendDialogOpen, setAddBackendDialogOpen] = useState(false);
-  const [savedBackendMode, setSavedBackendMode] = useState<"remote" | "ssh">("remote");
+  const [savedBackendMode, setSavedBackendMode] = useState<SavedBackendMode>("remote");
   const [savedBackendHost, setSavedBackendHost] = useState("");
   const [savedBackendPairingCode, setSavedBackendPairingCode] = useState("");
   const [savedBackendSshHost, setSavedBackendSshHost] = useState("");
   const [savedBackendSshUsername, setSavedBackendSshUsername] = useState("");
   const [savedBackendSshPort, setSavedBackendSshPort] = useState("");
   const [savedBackendError, setSavedBackendError] = useState<string | null>(null);
+  const [discoveredTailscaleHosts, setDiscoveredTailscaleHosts] = useState<
+    ReadonlyArray<DesktopDiscoveredHost>
+  >([]);
+  const [isScanningTailscaleHosts, setIsScanningTailscaleHosts] = useState(false);
+  const [tailscaleDiscoveryError, setTailscaleDiscoveryError] = useState<string | null>(null);
+  const [hasScannedTailscaleHosts, setHasScannedTailscaleHosts] = useState(false);
   const [isAddingSavedBackend, setIsAddingSavedBackend] = useState(false);
   const unsavedDiscoveredSshHosts = useMemo(
     () =>
@@ -2291,6 +2317,10 @@ export function ConnectionsSettings() {
       return;
     }
 
+    if (savedBackendMode === "tailnet") {
+      return;
+    }
+
     setIsAddingSavedBackend(true);
     setSavedBackendError(null);
     try {
@@ -2334,6 +2364,72 @@ export function ConnectionsSettings() {
     savedBackendSshPort,
     savedBackendSshUsername,
   ]);
+
+  const handleScanTailscaleHosts = useCallback(async () => {
+    if (!desktopBridge?.scanTailscaleHosts) {
+      setDiscoveredTailscaleHosts([]);
+      setHasScannedTailscaleHosts(true);
+      setTailscaleDiscoveryError("Tailscale scanning is unavailable in this desktop build.");
+      return;
+    }
+
+    setIsScanningTailscaleHosts(true);
+    setHasScannedTailscaleHosts(true);
+    setTailscaleDiscoveryError(null);
+    try {
+      const port = resolveTailscaleDiscoveryPort(savedBackendHost);
+      setDiscoveredTailscaleHosts(await desktopBridge.scanTailscaleHosts(port));
+    } catch (error) {
+      setDiscoveredTailscaleHosts([]);
+      setTailscaleDiscoveryError(
+        error instanceof Error ? error.message : "Unable to scan Tailscale hosts.",
+      );
+    } finally {
+      setIsScanningTailscaleHosts(false);
+    }
+  }, [desktopBridge, savedBackendHost]);
+
+  const handleSelectTailscaleHost = useCallback(async (host: DesktopDiscoveredHost) => {
+    if (host.tailnetAuthAvailable) {
+      setIsAddingSavedBackend(true);
+      setSavedBackendError(null);
+      try {
+        const record = await addSavedEnvironment({
+          label: "",
+          host: host.remoteUrl,
+          tailnetBootstrap: true,
+        });
+        setSavedBackendHost("");
+        setSavedBackendPairingCode("");
+        setSavedBackendSshHost("");
+        setSavedBackendSshUsername("");
+        setSavedBackendSshPort("");
+        setAddBackendDialogOpen(false);
+        toastManager.add({
+          type: "success",
+          title: "Backend added",
+          description: `${record.label} is now saved and will reconnect on app startup.`,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to add backend.";
+        setSavedBackendError(message);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not add backend",
+            description: message,
+          }),
+        );
+      } finally {
+        setIsAddingSavedBackend(false);
+      }
+      return;
+    }
+
+    setSavedBackendMode("remote");
+    setSavedBackendHost(host.remoteUrl);
+    setSavedBackendError(null);
+  }, []);
 
   const handleConnectSavedBackend = useCallback(async (environmentId: EnvironmentId) => {
     setReconnectingSavedEnvironmentId(environmentId);
@@ -2470,6 +2566,25 @@ export function ConnectionsSettings() {
     hasLoadedDiscoveredSshHosts,
     isLoadingDiscoveredSshHosts,
     loadDiscoveredSshHosts,
+    savedBackendMode,
+  ]);
+
+  useEffect(() => {
+    if (
+      !addBackendDialogOpen ||
+      savedBackendMode !== "tailnet" ||
+      hasScannedTailscaleHosts ||
+      isScanningTailscaleHosts
+    ) {
+      return;
+    }
+
+    void handleScanTailscaleHosts();
+  }, [
+    addBackendDialogOpen,
+    handleScanTailscaleHosts,
+    hasScannedTailscaleHosts,
+    isScanningTailscaleHosts,
     savedBackendMode,
   ]);
 
@@ -2640,7 +2755,7 @@ export function ConnectionsSettings() {
   }, []);
 
   const renderConnectionModeCard = (input: {
-    readonly mode: "remote" | "ssh";
+    readonly mode: SavedBackendMode;
     readonly title: string;
     readonly description: string;
     readonly icon?: ReactNode;
@@ -2656,6 +2771,13 @@ export function ConnectionsSettings() {
         )}
         disabled={isAddingSavedBackend}
         onClick={() => {
+          if (input.mode !== savedBackendMode) {
+            setSavedBackendError(null);
+          }
+          if (input.mode === "tailnet" && input.mode !== savedBackendMode) {
+            setHasScannedTailscaleHosts(false);
+            setTailscaleDiscoveryError(null);
+          }
           setSavedBackendMode(input.mode);
         }}
       >
@@ -2725,6 +2847,72 @@ export function ConnectionsSettings() {
         <PlusIcon className="size-3.5" />
         {isAddingSavedBackend ? "Adding…" : "Add environment"}
       </Button>
+    </div>
+  );
+  const renderTailnetModeBody = () => (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 p-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-foreground">Tailnet discovery</p>
+          <p className="text-[11px] text-muted-foreground">
+            Find online T3 Code backends reachable over Tailscale.
+          </p>
+        </div>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={isAddingSavedBackend || isScanningTailscaleHosts}
+          onClick={() => void handleScanTailscaleHosts()}
+        >
+          {isScanningTailscaleHosts ? (
+            <Spinner className="size-3" />
+          ) : hasScannedTailscaleHosts ? (
+            <RefreshCwIcon className="size-3" />
+          ) : (
+            <SearchIcon className="size-3" />
+          )}
+          {isScanningTailscaleHosts ? "Scanning..." : hasScannedTailscaleHosts ? "Refresh" : "Scan"}
+        </Button>
+      </div>
+      {tailscaleDiscoveryError ? (
+        <p className="text-xs text-destructive">{tailscaleDiscoveryError}</p>
+      ) : null}
+      {savedBackendError ? <p className="text-xs text-destructive">{savedBackendError}</p> : null}
+      {discoveredTailscaleHosts.length > 0 ? (
+        <div className="space-y-1">
+          {discoveredTailscaleHosts.map((host) => (
+            <button
+              key={host.id}
+              type="button"
+              className="flex w-full items-center justify-between gap-3 rounded-md border border-border/60 bg-background px-3 py-2 text-left transition-colors hover:bg-muted"
+              disabled={isAddingSavedBackend}
+              onClick={() => void handleSelectTailscaleHost(host)}
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-xs font-medium text-foreground">
+                  {host.name}
+                </span>
+                <span className="block truncate text-[11px] text-muted-foreground">
+                  {host.remoteUrl}
+                  {host.tailnetIp ? ` · ${host.tailnetIp}` : ""}
+                  {host.tailnetAuthAvailable
+                    ? " · tailnet trusted"
+                    : host.authEnabled
+                      ? " · pairing required"
+                      : ""}
+                </span>
+              </span>
+              <span className="shrink-0 text-[11px] text-muted-foreground">
+                {host.tailnetAuthAvailable ? "Connect" : "Use"}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : hasScannedTailscaleHosts && !isScanningTailscaleHosts && !tailscaleDiscoveryError ? (
+        <p className="text-xs text-muted-foreground">
+          No online T3 Code backends were found on your tailnet.
+        </p>
+      ) : null}
     </div>
   );
   const renderSshFields = () => (
@@ -3202,6 +3390,9 @@ export function ConnectionsSettings() {
               setAddBackendDialogOpen(open);
               if (!open) {
                 setSavedBackendError(null);
+                setTailscaleDiscoveryError(null);
+                setDiscoveredTailscaleHosts([]);
+                setHasScannedTailscaleHosts(false);
               }
             }}
           >
@@ -3232,7 +3423,12 @@ export function ConnectionsSettings() {
               </DialogHeader>
               <DialogPanel>
                 <div className="space-y-4">
-                  <div className="grid gap-3 sm:grid-cols-2">
+                  <div
+                    className={cn(
+                      "grid gap-3",
+                      desktopBridge?.scanTailscaleHosts ? "sm:grid-cols-3" : "sm:grid-cols-2",
+                    )}
+                  >
                     {renderConnectionModeCard({
                       mode: "remote",
                       title: "Remote link",
@@ -3247,9 +3443,21 @@ export function ConnectionsSettings() {
                           icon: <TerminalIcon aria-hidden className="size-4" />,
                         })
                       : null}
+                    {desktopBridge?.scanTailscaleHosts
+                      ? renderConnectionModeCard({
+                          mode: "tailnet",
+                          title: "Tailnet",
+                          description: "Discover trusted backends on your tailnet.",
+                          icon: <NetworkIcon aria-hidden className="size-4" />,
+                        })
+                      : null}
                   </div>
                   <AnimatedHeight>
-                    {savedBackendMode === "ssh" ? renderSshFields() : renderRemoteModeBody()}
+                    {savedBackendMode === "ssh"
+                      ? renderSshFields()
+                      : savedBackendMode === "tailnet"
+                        ? renderTailnetModeBody()
+                        : renderRemoteModeBody()}
                   </AnimatedHeight>
                 </div>
               </DialogPanel>

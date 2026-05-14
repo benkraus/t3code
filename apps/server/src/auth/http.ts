@@ -14,11 +14,13 @@ import {
   EnvironmentInternalError,
   type EnvironmentInternalErrorReason,
   EnvironmentOperationForbiddenError,
+  type EnvironmentOperationForbiddenReason,
   EnvironmentRequestInvalidError,
   type EnvironmentRequestInvalidReason,
   EnvironmentScopeRequiredError,
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
+  type AuthClientMetadata,
 } from "@t3tools/contracts";
 import type { AuthEnvironmentScope } from "@t3tools/contracts";
 import { parseAllowedOAuthScope } from "@t3tools/shared/oauthScope";
@@ -30,11 +32,17 @@ import * as Cookies from "effect/unstable/http/Cookies";
 import * as HttpEffect from "effect/unstable/http/HttpEffect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 import * as SessionStore from "./SessionStore.ts";
-import { deriveAuthClientMetadata } from "./utils.ts";
+import { deriveAuthClientMetadata, readRemoteAddressFromRequest } from "./utils.ts";
 import { verifyRequestDpopProof } from "./dpop.ts";
+import {
+  TailnetPeerVerificationError,
+  verifyTailnetPeer,
+  type VerifiedTailnetPeer,
+} from "./tailnet.ts";
 
 const CREDENTIAL_RESPONSE_HEADERS = {
   "cache-control": "no-store",
@@ -121,7 +129,7 @@ export function failEnvironmentScopeRequired(requiredScope: AuthEnvironmentScope
   );
 }
 
-function failEnvironmentOperationForbidden(reason: "current_session_revoke_not_allowed") {
+function failEnvironmentOperationForbidden(reason: EnvironmentOperationForbiddenReason) {
   return currentEnvironmentTraceId.pipe(
     Effect.flatMap((traceId) =>
       Effect.fail(
@@ -189,6 +197,49 @@ export const authHttpApiLayer = HttpApiBuilder.group(
     const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
     const sessions = yield* SessionStore.SessionStore;
 
+    const mapTailnetPeerVerificationError = (
+      error: TailnetPeerVerificationError,
+    ): Effect.Effect<never, EnvironmentAuthInvalidError | EnvironmentInternalError> => {
+      if (error.status === 401) {
+        return failEnvironmentAuthInvalid("missing_credential");
+      }
+      if (error.status === 403) {
+        return failEnvironmentAuthInvalid("invalid_credential");
+      }
+      return failEnvironmentInternal("tailnet_verification_failed", error);
+    };
+
+    const verifyTailnetBootstrapRequest = (): Effect.Effect<
+      {
+        readonly peer: VerifiedTailnetPeer;
+        readonly requestMetadata: AuthClientMetadata;
+      },
+      EnvironmentAuthInvalidError | EnvironmentInternalError | EnvironmentOperationForbiddenError,
+      HttpServerRequest.HttpServerRequest | ChildProcessSpawner.ChildProcessSpawner
+    > =>
+      Effect.gen(function* () {
+        const descriptor = yield* serverAuth.getDescriptor();
+        if (!descriptor.bootstrapMethods.includes("tailnet-trust")) {
+          return yield* failEnvironmentOperationForbidden("tailnet_trust_unavailable");
+        }
+
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const peer = yield* verifyTailnetPeer({
+          remoteAddress: readRemoteAddressFromRequest(request),
+        }).pipe(Effect.catchTag("TailnetPeerVerificationError", mapTailnetPeerVerificationError));
+
+        return {
+          peer,
+          requestMetadata: deriveAuthClientMetadata({
+            request,
+            presented: {
+              label: peer.label,
+              ...(peer.os ? { os: peer.os } : {}),
+            },
+          }),
+        };
+      });
+
     return handlers
       .handle(
         "session",
@@ -233,6 +284,53 @@ export const authHttpApiLayer = HttpApiBuilder.group(
             ServerAuthInternalError: (error) =>
               failEnvironmentInternal("browser_session_issuance_failed", error),
           }),
+        ),
+      )
+      .handle(
+        "tailnetBrowserSession",
+        Effect.fn("environment.auth.tailnetBrowserSession")(
+          function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            const { peer, requestMetadata } = yield* verifyTailnetBootstrapRequest();
+            const result = yield* serverAuth.issueTailnetBrowserSession({
+              subject: peer.subject,
+              requestMetadata,
+            });
+            const sessionCookies = yield* Effect.fromResult(
+              Cookies.set(Cookies.empty, sessions.cookieName, result.sessionToken, {
+                expires: DateTime.toDate(result.response.expiresAt),
+                httpOnly: true,
+                path: "/",
+                sameSite: "lax",
+              }),
+            ).pipe(Effect.catch(() => failEnvironmentInternal("browser_session_cookie_failed")));
+
+            yield* HttpEffect.appendPreResponseHandler((_request, response) =>
+              Effect.succeed(HttpServerResponse.mergeCookies(response, sessionCookies)),
+            );
+            yield* appendCredentialResponseHeaders;
+            return result.response;
+          },
+          Effect.catchTag("ServerAuthInternalError", (error) =>
+            failEnvironmentInternal("browser_session_issuance_failed", error),
+          ),
+        ),
+      )
+      .handle(
+        "tailnetToken",
+        Effect.fn("environment.auth.tailnetToken")(
+          function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            const { peer, requestMetadata } = yield* verifyTailnetBootstrapRequest();
+            yield* appendCredentialResponseHeaders;
+            return yield* serverAuth.issueTailnetAccessToken({
+              subject: peer.subject,
+              requestMetadata,
+            });
+          },
+          Effect.catchTag("ServerAuthInternalError", (error) =>
+            failEnvironmentInternal("access_token_issuance_failed", error),
+          ),
         ),
       )
       .handle(

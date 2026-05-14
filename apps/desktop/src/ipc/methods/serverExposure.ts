@@ -1,5 +1,6 @@
 import {
   AdvertisedEndpoint,
+  DesktopDiscoveredHostSchema,
   DesktopServerExposureModeSchema,
   DesktopServerExposureStateSchema,
 } from "@t3tools/contracts";
@@ -8,6 +9,7 @@ import * as Schema from "effect/Schema";
 
 import * as DesktopLifecycle from "../../app/DesktopLifecycle.ts";
 import * as DesktopServerExposure from "../../backend/DesktopServerExposure.ts";
+import { scanTailscaleHosts as scanTailscaleHostsOnTailnet } from "../../tailscaleDiscovery.ts";
 import * as IpcChannels from "../channels.ts";
 import { makeIpcMethod } from "../DesktopIpc.ts";
 
@@ -39,6 +41,15 @@ export const setServerExposureMode = makeIpcMethod({
     }
     return change.state;
   }),
+});
+
+export const scanTailscaleHosts = makeIpcMethod({
+  channel: IpcChannels.SCAN_TAILSCALE_HOSTS_CHANNEL,
+  payload: Schema.UndefinedOr(Schema.Number),
+  result: Schema.Array(DesktopDiscoveredHostSchema),
+  handler: Effect.fn("desktop.ipc.serverExposure.scanTailscaleHosts")((port) =>
+    scanTailscaleHostsOnTailnet(port === undefined ? undefined : { port }),
+  ),
 });
 
 export const setTailscaleServeEnabled = makeIpcMethod({

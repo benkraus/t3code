@@ -4,6 +4,7 @@ import {
   type AuthBrowserSessionResult,
   type AuthCreatePairingCredentialInput,
   type AuthSessionState,
+  type AuthTailnetSessionRequest,
   type DesktopBridge,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -85,6 +86,9 @@ async function installAuthApi(input: {
   readonly browserSession?: (
     credential: string,
   ) => Effect.Effect<AuthBrowserSessionResult, EnvironmentAuthInvalidError>;
+  readonly tailnetBrowserSession?: (
+    payload: AuthTailnetSessionRequest,
+  ) => Effect.Effect<AuthBrowserSessionResult, EnvironmentAuthInvalidError>;
   readonly pairingCredential?: (payload: AuthCreatePairingCredentialInput) => Effect.Effect<{
     readonly id: string;
     readonly credential: string;
@@ -96,6 +100,9 @@ async function installAuthApi(input: {
     ...(input.session ? { session: () => Effect.succeed(input.session!()) } : {}),
     ...(input.browserSession
       ? { browserSession: (payload) => input.browserSession!(payload.credential) }
+      : {}),
+    ...(input.tailnetBrowserSession
+      ? { tailnetBrowserSession: (payload) => input.tailnetBrowserSession!(payload) }
       : {}),
     ...(input.pairingCredential
       ? { pairingCredential: (payload) => input.pairingCredential!(payload) }
@@ -304,6 +311,34 @@ describe("resolveInitialServerAuthGateState", () => {
       "Invalid pairing token. Check the token and try again.",
     );
     expect(testApi.calls.browserSession).toEqual([{ credential: "bad-token" }]);
+  });
+
+  it("silently bootstraps the browser session through tailnet trust when advertised", async () => {
+    const remoteAuth = {
+      policy: "remote-reachable",
+      bootstrapMethods: ["one-time-token", "tailnet-trust"],
+      sessionMethods: ["browser-session-cookie"],
+      sessionCookieName: "t3_session",
+    } as const;
+    const nextSession = sequence(
+      unauthenticatedSession(remoteAuth),
+      authenticatedSession(remoteAuth),
+    );
+    const testApi = await installAuthApi({
+      session: nextSession,
+      tailnetBrowserSession: () =>
+        Effect.succeed(browserSession(["orchestration:read", "access:write"])),
+    });
+    installTestBrowser("http://100.64.0.10:3773/");
+
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
+
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "authenticated",
+    });
+    expect(testApi.calls.session).toBe(2);
+    expect(testApi.calls.tailnetBrowserSession).toEqual([{}]);
+    expect(testApi.calls.browserSession).toEqual([]);
   });
 
   it("waits for the authenticated session to become observable after silent desktop bootstrap", async () => {

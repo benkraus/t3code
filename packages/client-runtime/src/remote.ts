@@ -234,6 +234,17 @@ export const bootstrapRemoteBearerSession = Effect.fn(
   );
 });
 
+export const bootstrapRemoteTailnetBearerSession = Effect.fn(
+  "clientRuntime.remote.bootstrapRemoteTailnetBearerSession",
+)(function* (input: { readonly httpBaseUrl: string; readonly timeoutMs?: number }) {
+  const client = yield* makeEnvironmentHttpApiClient(input.httpBaseUrl);
+  return yield* executeRemoteRequest(
+    remoteEndpointUrl(input.httpBaseUrl, "/api/auth/tailnet/bootstrap"),
+    input.timeoutMs ?? DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+    client.auth.tailnetToken({ payload: {} }),
+  );
+});
+
 export const fetchRemoteSessionState = Effect.fn("clientRuntime.remote.fetchRemoteSessionState")(
   function* (input: {
     readonly httpBaseUrl: string;

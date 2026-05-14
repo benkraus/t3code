@@ -5,6 +5,11 @@ const HOSTED_PAIRING_LABEL_PARAM = "label";
 const readHashParams = (url: URL): URLSearchParams =>
   new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : url.hash);
 
+export interface ResolvedRemoteHostTarget {
+  readonly httpBaseUrl: string;
+  readonly wsBaseUrl: string;
+}
+
 const normalizeRemoteBaseUrl = (rawValue: string): URL => {
   const trimmed = rawValue.trim();
   if (!trimmed) {
@@ -149,3 +154,13 @@ export const resolveRemotePairingTarget = (input: {
     wsBaseUrl: toWsBaseUrl(normalizedHost),
   };
 };
+
+export function resolveRemoteHostTarget(input: {
+  readonly host: string;
+}): ResolvedRemoteHostTarget {
+  const normalizedHost = normalizeRemoteBaseUrl(input.host);
+  return {
+    httpBaseUrl: toHttpBaseUrl(normalizedHost),
+    wsBaseUrl: toWsBaseUrl(normalizedHost),
+  };
+}

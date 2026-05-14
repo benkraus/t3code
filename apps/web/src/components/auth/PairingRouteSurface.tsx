@@ -303,6 +303,12 @@ function describeAuthGate(bootstrapMethods: ReadonlyArray<string>): string {
 }
 
 function describeSupportedMethods(bootstrapMethods: ReadonlyArray<string>): string {
+  if (bootstrapMethods.includes("tailnet-trust")) {
+    return bootstrapMethods.includes("one-time-token")
+      ? "Tailnet auto-pairing and one-time pairing tokens are both accepted for this environment."
+      : "This environment accepts trusted tailnet auto-pairing.";
+  }
+
   if (
     bootstrapMethods.includes("desktop-bootstrap") &&
     bootstrapMethods.includes("one-time-token")

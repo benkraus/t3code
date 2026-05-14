@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveRemotePairingTarget } from "./remote.ts";
+import { resolveRemoteHostTarget, resolveRemotePairingTarget } from "./remote.ts";
 
 describe("remote", () => {
   it("derives backend urls and token from a pairing url", () => {
@@ -61,6 +61,13 @@ describe("remote", () => {
       }),
     ).toEqual({
       credential: "pairing-token",
+      httpBaseUrl: "https://myserver.com:3000/",
+      wsBaseUrl: "wss://myserver.com:3000/",
+    });
+  });
+
+  it("derives backend urls from a host without requiring a pairing code", () => {
+    expect(resolveRemoteHostTarget({ host: "myserver.com:3000" })).toEqual({
       httpBaseUrl: "https://myserver.com:3000/",
       wsBaseUrl: "wss://myserver.com:3000/",
     });

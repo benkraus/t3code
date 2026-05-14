@@ -50,7 +50,11 @@ it.layer(NodeServices.layer)("EnvironmentAuthPolicy.layer", (it) => {
       const descriptor = yield* policy.getDescriptor();
 
       expect(descriptor.policy).toBe("remote-reachable");
-      expect(descriptor.bootstrapMethods).toEqual(["desktop-bootstrap", "one-time-token"]);
+      expect(descriptor.bootstrapMethods).toEqual([
+        "desktop-bootstrap",
+        "one-time-token",
+        "tailnet-trust",
+      ]);
     }).pipe(
       Effect.provide(
         makeEnvironmentAuthPolicyLayer({
@@ -85,7 +89,7 @@ it.layer(NodeServices.layer)("EnvironmentAuthPolicy.layer", (it) => {
       const descriptor = yield* policy.getDescriptor();
 
       expect(descriptor.policy).toBe("remote-reachable");
-      expect(descriptor.bootstrapMethods).toEqual(["one-time-token"]);
+      expect(descriptor.bootstrapMethods).toEqual(["one-time-token", "tailnet-trust"]);
     }).pipe(
       Effect.provide(
         makeEnvironmentAuthPolicyLayer({

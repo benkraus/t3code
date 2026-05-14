@@ -19,6 +19,7 @@ import {
   AuthRevokeClientSessionInput,
   AuthRevokePairingLinkInput,
   AuthEnvironmentScope,
+  AuthTailnetSessionRequest,
   AuthTokenExchangeRequest,
   AuthSessionState,
   AuthWebSocketTicketResult,
@@ -65,6 +66,7 @@ export type EnvironmentAuthInvalidReason = typeof EnvironmentAuthInvalidReason.T
 
 export const EnvironmentOperationForbiddenReason = Schema.Literals([
   "current_session_revoke_not_allowed",
+  "tailnet_trust_unavailable",
 ]);
 export type EnvironmentOperationForbiddenReason = typeof EnvironmentOperationForbiddenReason.Type;
 
@@ -72,6 +74,7 @@ export const EnvironmentInternalErrorReason = Schema.Literals([
   "bootstrap_validation_failed",
   "browser_session_issuance_failed",
   "browser_session_cookie_failed",
+  "tailnet_verification_failed",
   "access_token_issuance_failed",
   "websocket_ticket_issuance_failed",
   "pairing_credential_issuance_failed",
@@ -245,11 +248,13 @@ export class EnvironmentCloudEndpointUnavailableError extends Schema.TaggedError
 }
 const EnvironmentSessionCreationErrors = [
   EnvironmentAuthInvalidError,
+  EnvironmentOperationForbiddenError,
   EnvironmentInternalError,
 ] as const;
 const EnvironmentTokenExchangeErrors = [
   EnvironmentRequestInvalidError,
   EnvironmentAuthInvalidError,
+  EnvironmentOperationForbiddenError,
   EnvironmentInternalError,
 ] as const;
 const EnvironmentScopedOperationErrors = [
@@ -359,6 +364,20 @@ export class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
       payload: AuthBrowserSessionRequest,
       success: AuthBrowserSessionResult,
       error: EnvironmentSessionCreationErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("tailnetBrowserSession", "/api/auth/tailnet/bootstrap/browser", {
+      payload: AuthTailnetSessionRequest,
+      success: AuthBrowserSessionResult,
+      error: EnvironmentSessionCreationErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("tailnetToken", "/api/auth/tailnet/bootstrap", {
+      payload: AuthTailnetSessionRequest,
+      success: AuthAccessTokenResult,
+      error: EnvironmentTokenExchangeErrors,
     }),
   )
   .add(

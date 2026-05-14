@@ -201,6 +201,30 @@ export const DesktopRuntimeInfoSchema = Schema.Struct({
   runningUnderArm64Translation: Schema.Boolean,
 });
 
+export interface DesktopDiscoveredHost {
+  id: string;
+  name: string;
+  host: string;
+  dnsName: string | null;
+  tailnetIp: string | null;
+  os: string | null;
+  remoteUrl: string;
+  authEnabled: boolean;
+  tailnetAuthAvailable: boolean;
+}
+
+export const DesktopDiscoveredHostSchema = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  host: Schema.String,
+  dnsName: Schema.NullOr(Schema.String),
+  tailnetIp: Schema.NullOr(Schema.String),
+  os: Schema.NullOr(Schema.String),
+  remoteUrl: Schema.String,
+  authEnabled: Schema.Boolean,
+  tailnetAuthAvailable: Schema.Boolean,
+});
+
 export interface DesktopUpdateState {
   enabled: boolean;
   status: DesktopUpdateStatus;
@@ -926,6 +950,7 @@ export interface DesktopBridge {
   resolveSshPasswordPrompt: (requestId: string, password: string | null) => Promise<void>;
   getServerExposureState: () => Promise<DesktopServerExposureState>;
   setServerExposureMode: (mode: DesktopServerExposureMode) => Promise<DesktopServerExposureState>;
+  scanTailscaleHosts: (port?: number) => Promise<DesktopDiscoveredHost[]>;
   setTailscaleServeEnabled: (input: {
     readonly enabled: boolean;
     readonly port?: number;

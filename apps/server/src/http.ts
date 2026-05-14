@@ -23,6 +23,7 @@ import {
 } from "effect/unstable/http";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import { OtlpTracer } from "effect/unstable/observability";
+import type { ServerDiscoveryInfo } from "@t3tools/contracts";
 
 import { resolveStaticDir, ServerConfig } from "./config.ts";
 import {
@@ -42,6 +43,7 @@ import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { browserApiCorsAllowedHeaders, browserApiCorsAllowedMethods } from "./httpCors.ts";
 
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
+const SERVER_DISCOVERY_ROUTE = "/api/server-discovery";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
 
 export const browserApiCorsLayer = Layer.unwrap(
@@ -102,6 +104,21 @@ export const serverEnvironmentHttpApiLayer = HttpApiBuilder.group(
         return yield* serverEnvironment.getDescriptor;
       }),
     );
+  }),
+);
+
+export const serverDiscoveryRouteLayer = HttpRouter.add(
+  "GET",
+  SERVER_DISCOVERY_ROUTE,
+  Effect.gen(function* () {
+    const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+    const auth = yield* serverAuth.getDescriptor();
+    const payload: ServerDiscoveryInfo = {
+      app: "t3code",
+      authEnabled: auth.policy !== "unsafe-no-auth",
+      tailnetAuthAvailable: auth.bootstrapMethods.includes("tailnet-trust"),
+    };
+    return HttpServerResponse.jsonUnsafe(payload, { status: 200 });
   }),
 );
 

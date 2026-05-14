@@ -105,7 +105,7 @@ function inferOs(userAgent: string | undefined): string | undefined {
   return undefined;
 }
 
-function readRemoteAddressFromSource(source: unknown): string | undefined {
+export function readRemoteAddressFromSource(source: unknown): string | undefined {
   if (!source || typeof source !== "object") {
     return undefined;
   }
@@ -120,12 +120,18 @@ function readRemoteAddressFromSource(source: unknown): string | undefined {
   return normalizeIpAddress(candidate.socket?.remoteAddress ?? candidate.remoteAddress);
 }
 
+export function readRemoteAddressFromRequest(
+  request: HttpServerRequest.HttpServerRequest,
+): string | undefined {
+  return readRemoteAddressFromSource(request.source);
+}
+
 export function deriveAuthClientMetadata(input: {
   readonly request: HttpServerRequest.HttpServerRequest;
   readonly presented?: AuthClientPresentationMetadata;
 }): AuthClientMetadata {
   const userAgent = normalizeNonEmptyString(input.request.headers["user-agent"]);
-  const ipAddress = readRemoteAddressFromSource(input.request.source);
+  const ipAddress = readRemoteAddressFromRequest(input.request);
   const os = input.presented?.os ?? inferOs(userAgent);
   const browser = inferBrowser(userAgent);
   return {

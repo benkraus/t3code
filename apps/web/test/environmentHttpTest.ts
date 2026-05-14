@@ -4,12 +4,14 @@ import {
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
   EnvironmentHttpApi,
+  type AuthAccessTokenResult,
   type AuthBrowserSessionRequest,
   type AuthBrowserSessionResult,
   type AuthCreatePairingCredentialInput,
   type AuthEnvironmentScope,
   type AuthPairingCredentialResult,
   type AuthSessionState,
+  type AuthTailnetSessionRequest,
   type ExecutionEnvironmentDescriptor,
   type EnvironmentAuthInvalidError,
 } from "@t3tools/contracts";
@@ -28,10 +30,20 @@ type BrowserSessionHandler = (
   payload: AuthBrowserSessionRequest,
 ) => Effect.Effect<AuthBrowserSessionResult, EnvironmentAuthInvalidError>;
 
+type TailnetBrowserSessionHandler = (
+  payload: AuthTailnetSessionRequest,
+) => Effect.Effect<AuthBrowserSessionResult, EnvironmentAuthInvalidError>;
+
+type TailnetTokenHandler = (
+  payload: AuthTailnetSessionRequest,
+) => Effect.Effect<AuthAccessTokenResult, EnvironmentAuthInvalidError>;
+
 interface EnvironmentHttpTestScenario {
   readonly descriptor?: () => Effect.Effect<ExecutionEnvironmentDescriptor>;
   readonly session?: () => Effect.Effect<AuthSessionState>;
   readonly browserSession?: BrowserSessionHandler;
+  readonly tailnetBrowserSession?: TailnetBrowserSessionHandler;
+  readonly tailnetToken?: TailnetTokenHandler;
   readonly pairingCredential?: (
     payload: AuthCreatePairingCredentialInput,
   ) => Effect.Effect<AuthPairingCredentialResult>;
@@ -41,6 +53,8 @@ export interface EnvironmentHttpTestCalls {
   descriptor: number;
   session: number;
   browserSession: Array<AuthBrowserSessionRequest>;
+  tailnetBrowserSession: Array<AuthTailnetSessionRequest>;
+  tailnetToken: Array<AuthTailnetSessionRequest>;
   pairingCredential: Array<AuthCreatePairingCredentialInput>;
 }
 
@@ -65,6 +79,8 @@ export async function installEnvironmentHttpTest(scenario: EnvironmentHttpTestSc
     descriptor: 0,
     session: 0,
     browserSession: [],
+    tailnetBrowserSession: [],
+    tailnetToken: [],
     pairingCredential: [],
   };
 
@@ -96,6 +112,25 @@ export async function installEnvironmentHttpTest(scenario: EnvironmentHttpTestSc
                 calls.browserSession.push(payload);
                 return yield* (
                   scenario.browserSession?.(payload) ?? unexpectedEndpoint("auth.browserSession")
+                );
+              }),
+            )
+            .handle(
+              "tailnetBrowserSession",
+              Effect.fn("test.environment.auth.tailnetBrowserSession")(function* ({ payload }) {
+                calls.tailnetBrowserSession.push(payload);
+                return yield* (
+                  scenario.tailnetBrowserSession?.(payload) ??
+                    unexpectedEndpoint("auth.tailnetBrowserSession")
+                );
+              }),
+            )
+            .handle(
+              "tailnetToken",
+              Effect.fn("test.environment.auth.tailnetToken")(function* ({ payload }) {
+                calls.tailnetToken.push(payload);
+                return yield* (
+                  scenario.tailnetToken?.(payload) ?? unexpectedEndpoint("auth.tailnetToken")
                 );
               }),
             )

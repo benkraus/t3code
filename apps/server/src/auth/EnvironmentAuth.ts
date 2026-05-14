@@ -117,6 +117,12 @@ export interface EnvironmentAuthShape {
     AuthAccessTokenResult,
     ServerAuthInvalidCredentialError | ServerAuthInvalidRequestError | ServerAuthInternalError
   >;
+  readonly issueTailnetBrowserSession: (
+    input: TailnetSessionInput,
+  ) => Effect.Effect<BootstrapExchangeResult, ServerAuthInternalError>;
+  readonly issueTailnetAccessToken: (
+    input: TailnetSessionInput,
+  ) => Effect.Effect<AuthAccessTokenResult, ServerAuthInternalError>;
   readonly createPairingLink: (input?: {
     readonly ttl?: Duration.Duration;
     readonly label?: string;
@@ -188,6 +194,11 @@ export class EnvironmentAuth extends Context.Service<EnvironmentAuth, Environmen
 type BootstrapExchangeResult = {
   readonly response: AuthBrowserSessionResult;
   readonly sessionToken: string;
+};
+
+type TailnetSessionInput = {
+  readonly subject: string;
+  readonly requestMetadata: AuthClientMetadata;
 };
 
 const AUTHORIZATION_PREFIX = "Bearer ";
@@ -461,6 +472,75 @@ export const make = Effect.fn("makeEnvironmentAuth")(function* () {
         Effect.withSpan("EnvironmentAuth.exchangeBootstrapCredentialForAccessToken"),
       );
 
+  const issueTailnetBrowserSession: EnvironmentAuthShape["issueTailnetBrowserSession"] = (input) =>
+    sessions
+      .issue({
+        method: "browser-session-cookie",
+        subject: input.subject,
+        scopes: AuthStandardClientScopes,
+        client: input.requestMetadata,
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ServerAuthInternalError({
+              message: "Failed to issue tailnet authenticated session.",
+              cause,
+            }),
+        ),
+        Effect.map(
+          (session) =>
+            ({
+              response: {
+                authenticated: true,
+                scopes: session.scopes,
+                sessionMethod: session.method,
+                expiresAt: DateTime.toUtc(session.expiresAt),
+              } satisfies AuthBrowserSessionResult,
+              sessionToken: session.token,
+            }) satisfies BootstrapExchangeResult,
+        ),
+        Effect.withSpan("EnvironmentAuth.issueTailnetBrowserSession"),
+      );
+
+  const issueTailnetAccessToken: EnvironmentAuthShape["issueTailnetAccessToken"] = (input) =>
+    sessions
+      .issue({
+        method: "bearer-access-token",
+        subject: input.subject,
+        scopes: AuthStandardClientScopes,
+        client: input.requestMetadata,
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ServerAuthInternalError({
+              message: "Failed to issue tailnet access token.",
+              cause,
+            }),
+        ),
+        Effect.flatMap((session) =>
+          DateTime.now.pipe(
+            Effect.map(
+              (now) =>
+                ({
+                  access_token: session.token,
+                  issued_token_type: AuthAccessTokenType,
+                  token_type: "Bearer",
+                  expires_in: Math.max(
+                    0,
+                    Math.floor(
+                      (session.expiresAt.epochMilliseconds - now.epochMilliseconds) / 1000,
+                    ),
+                  ),
+                  scope: encodeOAuthScope(session.scopes),
+                }) satisfies AuthAccessTokenResult,
+            ),
+          ),
+        ),
+        Effect.withSpan("EnvironmentAuth.issueTailnetAccessToken"),
+      );
+
   const issuePairingCredentialForSubject = (input: {
     readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
     readonly subject: string;
@@ -691,6 +771,8 @@ export const make = Effect.fn("makeEnvironmentAuth")(function* () {
     getSessionState,
     createBrowserSession,
     exchangeBootstrapCredentialForAccessToken,
+    issueTailnetBrowserSession,
+    issueTailnetAccessToken,
     createPairingLink,
     issuePairingCredential,
     issueStartupPairingCredential,

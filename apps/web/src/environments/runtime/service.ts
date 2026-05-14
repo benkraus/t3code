@@ -14,6 +14,7 @@ import {
   createWsRpcClient as createBaseWsRpcClient,
   type WsRpcClient,
   bootstrapRemoteBearerSession,
+  bootstrapRemoteTailnetBearerSession,
   fetchRemoteEnvironmentDescriptor,
   fetchRemoteDpopSessionState,
   fetchRemoteSessionState,
@@ -95,7 +96,7 @@ import { getClientSettings } from "~/hooks/useSettings";
 import { subscribeTerminalMetadata, terminalSessionManager } from "../../terminalSessionState";
 import { subscribePortDiscovery, usePortDiscoveryStore } from "../../portDiscoveryState";
 import { resetWsReconnectBackoff } from "~/rpc/wsConnectionState";
-import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
+import { resolveRemoteHostTarget, resolveRemotePairingTarget } from "@t3tools/shared/remote";
 
 type EnvironmentServiceState = {
   readonly queryClient: QueryClient;
@@ -1872,12 +1873,21 @@ export async function addSavedEnvironment(input: {
   readonly host?: string;
   readonly pairingCode?: string;
   readonly desktopSsh?: DesktopSshEnvironmentTarget;
+  readonly tailnetBootstrap?: boolean;
 }): Promise<SavedEnvironmentRecord> {
-  const resolvedTarget = resolveRemotePairingTarget({
-    ...(input.pairingUrl !== undefined ? { pairingUrl: input.pairingUrl } : {}),
-    ...(input.host !== undefined ? { host: input.host } : {}),
-    ...(input.pairingCode !== undefined ? { pairingCode: input.pairingCode } : {}),
-  });
+  const resolvedTarget = input.tailnetBootstrap
+    ? {
+        kind: "tailnet" as const,
+        ...resolveRemoteHostTarget({ host: input.host ?? "" }),
+      }
+    : {
+        kind: "paired" as const,
+        ...resolveRemotePairingTarget({
+          ...(input.pairingUrl !== undefined ? { pairingUrl: input.pairingUrl } : {}),
+          ...(input.host !== undefined ? { host: input.host } : {}),
+          ...(input.pairingCode !== undefined ? { pairingCode: input.pairingCode } : {}),
+        }),
+      };
   const descriptor = input.desktopSsh
     ? await fetchDesktopSshEnvironmentDescriptor(resolvedTarget.httpBaseUrl)
     : await webRuntime.runPromise(
@@ -1893,14 +1903,24 @@ export async function addSavedEnvironment(input: {
   const staleDesktopSshRecord =
     existingRecord && existingRecord.environmentId !== environmentId ? existingRecord : null;
 
-  const bearerSession = input.desktopSsh
-    ? await bootstrapDesktopSshBearerSession(resolvedTarget.httpBaseUrl, resolvedTarget.credential)
-    : await webRuntime.runPromise(
-        bootstrapRemoteBearerSession({
-          httpBaseUrl: resolvedTarget.httpBaseUrl,
-          credential: resolvedTarget.credential,
-        }),
-      );
+  const bearerSession =
+    resolvedTarget.kind === "tailnet"
+      ? await webRuntime.runPromise(
+          bootstrapRemoteTailnetBearerSession({
+            httpBaseUrl: resolvedTarget.httpBaseUrl,
+          }),
+        )
+      : input.desktopSsh
+        ? await bootstrapDesktopSshBearerSession(
+            resolvedTarget.httpBaseUrl,
+            resolvedTarget.credential,
+          )
+        : await webRuntime.runPromise(
+            bootstrapRemoteBearerSession({
+              httpBaseUrl: resolvedTarget.httpBaseUrl,
+              credential: resolvedTarget.credential,
+            }),
+          );
 
   const record: SavedEnvironmentRecord = {
     environmentId,

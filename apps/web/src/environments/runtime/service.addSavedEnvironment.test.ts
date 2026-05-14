@@ -13,8 +13,10 @@ const decodeEnvironmentAuthInvalidError = Schema.decodeUnknownSync(EnvironmentAu
 let mockSavedRecords: Array<Record<string, unknown>> = [];
 
 const mockResolveRemotePairingTarget = vi.fn();
+const mockResolveRemoteHostTarget = vi.fn();
 const mockFetchRemoteEnvironmentDescriptor = vi.fn();
 const mockBootstrapRemoteBearerSession = vi.fn();
+const mockBootstrapRemoteTailnetBearerSession = vi.fn();
 const mockFetchRemoteSessionState = vi.fn();
 const mockFetchRemoteDpopSessionState = vi.fn();
 const mockResolveRemoteDpopWebSocketConnectionUrl = vi.fn();
@@ -89,6 +91,7 @@ const mockReadManagedRelayClerkToken = vi.fn();
 
 vi.mock("@t3tools/shared/remote", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@t3tools/shared/remote")>()),
+  resolveRemoteHostTarget: mockResolveRemoteHostTarget,
   resolveRemotePairingTarget: mockResolveRemotePairingTarget,
 }));
 
@@ -156,6 +159,7 @@ vi.mock("@t3tools/client-runtime", async (importOriginal) => {
   return {
     ...actual,
     bootstrapRemoteBearerSession: mockBootstrapRemoteBearerSession,
+    bootstrapRemoteTailnetBearerSession: mockBootstrapRemoteTailnetBearerSession,
     createWsRpcClient: vi.fn(() => ({
       server: {
         getConfig: mockClientGetConfig,
@@ -221,6 +225,12 @@ describe("addSavedEnvironment", () => {
         credential: input.pairingCode ?? "pairing-code",
       }),
     );
+    mockResolveRemoteHostTarget.mockImplementation((input: { host: string }) => ({
+      httpBaseUrl: input.host.endsWith("/") ? input.host : `${input.host}/`,
+      wsBaseUrl: input.host.replace(/^http/u, "ws").endsWith("/")
+        ? input.host.replace(/^http/u, "ws")
+        : `${input.host.replace(/^http/u, "ws")}/`,
+    }));
     mockReadSavedEnvironmentCredential.mockImplementation(async () => {
       const token = await mockReadSavedEnvironmentBearerToken();
       return token ? { version: 1, method: "bearer", token } : null;
@@ -234,6 +244,12 @@ describe("addSavedEnvironment", () => {
     mockBootstrapRemoteBearerSession.mockReturnValue(
       Effect.succeed({
         access_token: "bearer-token",
+        scope: "orchestration:read orchestration:operate terminal:operate review:write relay:read",
+      }),
+    );
+    mockBootstrapRemoteTailnetBearerSession.mockReturnValue(
+      Effect.succeed({
+        access_token: "tailnet-bearer-token",
         scope: "orchestration:read orchestration:operate terminal:operate review:write relay:read",
       }),
     );
@@ -389,6 +405,38 @@ describe("addSavedEnvironment", () => {
         label: "Julius's Mac mini",
       }),
     ]);
+
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("uses tailnet bootstrap without resolving a pairing credential", async () => {
+    mockWriteSavedEnvironmentBearerToken.mockResolvedValue(true);
+
+    const { addSavedEnvironment, resetEnvironmentServiceForTests } = await import("./service");
+
+    await expect(
+      addSavedEnvironment({
+        label: "Tailnet environment",
+        host: "https://work-mac.tailnet.ts.net:3773",
+        tailnetBootstrap: true,
+      }),
+    ).resolves.toMatchObject({
+      environmentId: EnvironmentId.make("environment-1"),
+      httpBaseUrl: "https://work-mac.tailnet.ts.net:3773/",
+      wsBaseUrl: "wss://work-mac.tailnet.ts.net:3773/",
+    });
+
+    expect(mockResolveRemotePairingTarget).not.toHaveBeenCalled();
+    expect(mockResolveRemoteHostTarget).toHaveBeenCalledWith({
+      host: "https://work-mac.tailnet.ts.net:3773",
+    });
+    expect(mockBootstrapRemoteTailnetBearerSession).toHaveBeenCalledWith({
+      httpBaseUrl: "https://work-mac.tailnet.ts.net:3773/",
+    });
+    expect(mockWriteSavedEnvironmentBearerToken).toHaveBeenCalledWith(
+      EnvironmentId.make("environment-1"),
+      "tailnet-bearer-token",
+    );
 
     await resetEnvironmentServiceForTests();
   });

@@ -193,6 +193,27 @@ async function exchangeBootstrapCredential(credential: string): Promise<AuthBrow
   });
 }
 
+async function exchangeTailnetBootstrap(): Promise<AuthBrowserSessionResult> {
+  return retryTransientBootstrap(async () => {
+    try {
+      return await runPrimaryHttp(
+        PrimaryEnvironmentHttpClient.pipe(
+          Effect.flatMap((client) => client.auth.tailnetBrowserSession({ payload: {} })),
+        ),
+      );
+    } catch (error) {
+      const status = readHttpApiStatus(error) ?? 500;
+      throw new BootstrapHttpError({
+        message: readHttpApiErrorMessage(
+          error,
+          `Failed to bootstrap tailnet auth session (${status}).`,
+        ),
+        status,
+      });
+    }
+  });
+}
+
 async function waitForAuthenticatedSessionAfterBootstrap(): Promise<AuthSessionState> {
   const startedAt = Date.now();
 
@@ -256,6 +277,19 @@ async function bootstrapServerAuth(): Promise<ServerAuthGateState> {
   const currentSession = await fetchSessionState();
   if (currentSession.authenticated) {
     return { status: "authenticated" };
+  }
+
+  if (!bootstrapCredential && currentSession.auth.bootstrapMethods.includes("tailnet-trust")) {
+    try {
+      await exchangeTailnetBootstrap();
+      await waitForAuthenticatedSessionAfterBootstrap();
+      return { status: "authenticated" };
+    } catch {
+      return {
+        status: "requires-auth",
+        auth: currentSession.auth,
+      };
+    }
   }
 
   if (!bootstrapCredential) {

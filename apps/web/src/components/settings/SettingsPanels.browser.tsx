@@ -148,6 +148,7 @@ const authAccessHarness = vi.hoisted(() => {
 });
 
 const mockConnectDesktopSshEnvironment = vi.hoisted(() => vi.fn());
+const mockAddSavedEnvironment = vi.hoisted(() => vi.fn());
 const mockGetClerkToken = vi.hoisted(() => vi.fn(async () => null));
 const mockOpenClerkWaitlist = vi.hoisted(() => vi.fn());
 
@@ -198,7 +199,7 @@ vi.mock("../../environments/runtime", () => {
       new URL(path, "http://localhost:3000").toString(),
     waitForSavedEnvironmentRegistryHydration: async () => undefined,
     addManagedRelayEnvironment: vi.fn(),
-    addSavedEnvironment: vi.fn(),
+    addSavedEnvironment: mockAddSavedEnvironment,
     connectDesktopSshEnvironment: mockConnectDesktopSshEnvironment,
     disconnectSavedEnvironment: vi.fn(),
     ensureEnvironmentConnectionBootstrapped: async () => undefined,
@@ -350,6 +351,7 @@ function makeClientSession(input: {
 
 const createDesktopBridgeStub = (overrides?: {
   readonly discoverSshHosts?: DesktopBridge["discoverSshHosts"];
+  readonly scanTailscaleHosts?: DesktopBridge["scanTailscaleHosts"];
   readonly serverExposureState?: Awaited<ReturnType<DesktopBridge["getServerExposureState"]>>;
   readonly advertisedEndpoints?: Awaited<ReturnType<DesktopBridge["getAdvertisedEndpoints"]>>;
   readonly setServerExposureMode?: DesktopBridge["setServerExposureMode"];
@@ -458,6 +460,7 @@ const createDesktopBridgeStub = (overrides?: {
       tailscaleServePort: input.port ?? 443,
     })),
     getAdvertisedEndpoints: vi.fn().mockResolvedValue(overrides?.advertisedEndpoints ?? []),
+    scanTailscaleHosts: overrides?.scanTailscaleHosts ?? vi.fn().mockResolvedValue([]),
     pickFolder: vi.fn().mockResolvedValue(null),
     confirm: vi.fn().mockResolvedValue(false),
     setTheme: vi.fn().mockResolvedValue(undefined),
@@ -509,6 +512,7 @@ describe("GeneralSettingsPanel observability", () => {
     useUiStateStore.setState({ defaultAdvertisedEndpointKey: null });
     authAccessHarness.reset();
     mockConnectDesktopSshEnvironment.mockReset();
+    mockAddSavedEnvironment.mockReset();
   });
 
   afterEach(async () => {
@@ -1148,6 +1152,61 @@ describe("GeneralSettingsPanel observability", () => {
         },
         { label: "" },
       );
+    });
+  });
+
+  it("scans tailnet hosts when the tailnet add-environment mode opens", async () => {
+    const scanTailscaleHosts = vi.fn().mockResolvedValue([
+      {
+        id: "node-1",
+        name: "Work Mac",
+        host: "work-mac",
+        dnsName: "work-mac.tailnet.ts.net",
+        tailnetIp: "100.80.70.60",
+        os: "macOS",
+        remoteUrl: "https://work-mac.tailnet.ts.net:3773",
+        authEnabled: true,
+        tailnetAuthAvailable: true,
+      },
+    ]);
+    window.desktopBridge = createDesktopBridgeStub({
+      scanTailscaleHosts,
+    });
+    mockAddSavedEnvironment.mockResolvedValue({
+      environmentId: EnvironmentId.make("environment-tailnet"),
+      label: "Work Mac",
+      wsBaseUrl: "wss://work-mac.tailnet.ts.net:3773/",
+      httpBaseUrl: "https://work-mac.tailnet.ts.net:3773/",
+      createdAt: "2036-04-07T00:00:00.000Z",
+      lastConnectedAt: "2036-04-07T00:00:00.000Z",
+    });
+
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ConnectionsSettings />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByRole("button", { name: "Add environment", exact: true }).click();
+    const addEnvironmentDialog = page.getByRole("dialog", { name: "Add Environment" });
+
+    expect(scanTailscaleHosts).not.toHaveBeenCalled();
+    await addEnvironmentDialog.getByRole("button", { name: /^Tailnet\b/ }).click();
+    await vi.waitFor(() => {
+      expect(scanTailscaleHosts).toHaveBeenCalledTimes(1);
+    });
+    expect(scanTailscaleHosts).toHaveBeenCalledWith(undefined);
+    await expect.element(addEnvironmentDialog.getByText("Work Mac")).toBeInTheDocument();
+
+    await addEnvironmentDialog.getByRole("button", { name: /Work Mac/ }).click();
+    await vi.waitFor(() => {
+      expect(mockAddSavedEnvironment).toHaveBeenCalledWith({
+        label: "",
+        host: "https://work-mac.tailnet.ts.net:3773",
+        tailnetBootstrap: true,
+      });
     });
   });
 

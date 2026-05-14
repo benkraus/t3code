@@ -33,8 +33,10 @@ export const make = Effect.fn("makeEnvironmentAuthPolicy")(function* () {
     policy === "desktop-managed-local"
       ? ["desktop-bootstrap"]
       : config.mode === "desktop" && policy === "remote-reachable"
-        ? ["desktop-bootstrap", "one-time-token"]
-        : ["one-time-token"];
+        ? ["desktop-bootstrap", "one-time-token", "tailnet-trust"]
+        : policy === "remote-reachable"
+          ? ["one-time-token", "tailnet-trust"]
+          : ["one-time-token"];
 
   const descriptor: ServerAuthDescriptor = {
     policy,

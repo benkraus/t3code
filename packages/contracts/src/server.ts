@@ -558,3 +558,10 @@ export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerPro
     return `Provider update failed for ${this.provider}: ${this.reason}`;
   }
 }
+
+export const ServerDiscoveryInfo = Schema.Struct({
+  app: Schema.Literal("t3code"),
+  authEnabled: Schema.Boolean,
+  tailnetAuthAvailable: Schema.optionalKey(Schema.Boolean),
+});
+export type ServerDiscoveryInfo = typeof ServerDiscoveryInfo.Type;

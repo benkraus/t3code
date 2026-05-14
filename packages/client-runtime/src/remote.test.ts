@@ -8,6 +8,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { EnvironmentAuthInvalidError } from "@t3tools/contracts";
 import {
   bootstrapRemoteBearerSession,
+  bootstrapRemoteTailnetBearerSession,
   exchangeRemoteDpopAccessToken,
   fetchRemoteDpopSessionState,
   fetchRemoteEnvironmentDescriptor,
@@ -122,6 +123,41 @@ describe("remote", () => {
           "content-type": "application/x-www-form-urlencoded",
         },
         body: "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&subject_token=pairing-token&subject_token_type=urn%3At3%3Aparams%3Aoauth%3Atoken-type%3Aenvironment-bootstrap&requested_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token",
+      });
+    }),
+  );
+
+  it.effect("bootstraps bearer auth through tailnet trust", () =>
+    Effect.gen(function* () {
+      const fetch = recordedFetch(
+        Response.json(
+          {
+            access_token: "tailnet-bearer-token",
+            issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+            token_type: "Bearer",
+            expires_in: 3600,
+            scope:
+              "orchestration:read orchestration:operate terminal:operate review:write relay:read",
+          },
+          { status: 200 },
+        ),
+      );
+
+      const result = yield* bootstrapRemoteTailnetBearerSession({
+        httpBaseUrl: "https://remote.example.com/",
+      }).pipe(provideRemoteHttp(fetch.fetchFn));
+
+      expect(result).toMatchObject({
+        token_type: "Bearer",
+        access_token: "tailnet-bearer-token",
+      });
+      expectFetchCall(fetch.calls, 1, {
+        url: "https://remote.example.com/api/auth/tailnet/bootstrap",
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: "{}",
       });
     }),
   );

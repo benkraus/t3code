@@ -250,6 +250,7 @@ function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
       tailscaleServePort: input.port ?? 443,
     }),
     getAdvertisedEndpoints: async () => [],
+    scanTailscaleHosts: async () => [],
     pickFolder: async () => null,
     confirm: async () => true,
     setTheme: async () => undefined,

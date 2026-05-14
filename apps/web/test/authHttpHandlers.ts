@@ -77,6 +77,8 @@ export function createAuthenticatedSessionHandlers(getAuthDescriptor: () => Serv
           expiresAt: TEST_SESSION_EXPIRES_AT,
         }),
       )
+      .handle("tailnetBrowserSession", () => unexpectedEndpoint("auth.tailnetBrowserSession"))
+      .handle("tailnetToken", () => unexpectedEndpoint("auth.tailnetToken"))
       .handle("token", () => unexpectedEndpoint("auth.token"))
       .handle("webSocketTicket", () => unexpectedEndpoint("auth.webSocketTicket"))
       .handle("pairingCredential", () => unexpectedEndpoint("auth.pairingCredential"))
