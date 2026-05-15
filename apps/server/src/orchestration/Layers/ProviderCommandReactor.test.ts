@@ -5,6 +5,7 @@ import path from "node:path";
 
 import {
   ModelSelection,
+  type ProviderRunSlashCommandResult,
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderDriverKind,
@@ -220,6 +221,13 @@ describe("ProviderCommandReactor", () => {
         turnId: asTurnId("turn-1"),
       }),
     );
+    const runSlashCommand = vi.fn<ProviderServiceShape["runSlashCommand"]>((input) =>
+      Effect.succeed({
+        threadId: input.threadId,
+        command: input.command,
+        message: `Provider command /${input.command.name} completed`,
+      }),
+    );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
@@ -296,6 +304,7 @@ describe("ProviderCommandReactor", () => {
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
+      runSlashCommand,
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
@@ -409,9 +418,11 @@ describe("ProviderCommandReactor", () => {
 
     return {
       engine,
+      runtime,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       startSession,
       sendTurn,
+      runSlashCommand,
       interruptTurn,
       respondToRequest,
       respondToUserInput,
@@ -463,6 +474,91 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("reacts to provider slash commands by ensuring a session and invoking the adapter", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    let resolveSlashCommand!: (result: ProviderRunSlashCommandResult) => void;
+    const slashCommandResult = new Promise<ProviderRunSlashCommandResult>((resolve) => {
+      resolveSlashCommand = resolve;
+    });
+    harness.runSlashCommand.mockImplementationOnce((_input) =>
+      Effect.promise(() => slashCommandResult),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.provider-slash-command.run",
+        commandId: CommandId.make("cmd-provider-slash-1"),
+        threadId: ThreadId.make("thread-1"),
+        command: "goal",
+        arguments: "improve benchmark coverage",
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5-codex"),
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.runSlashCommand.mock.calls.length === 1);
+    expect(harness.runSlashCommand.mock.calls[0]?.[0]).toEqual({
+      threadId: ThreadId.make("thread-1"),
+      command: {
+        name: "goal",
+        arguments: "improve benchmark coverage",
+      },
+    });
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return (
+        thread?.activities.some(
+          (activity) =>
+            activity.kind === "provider.goal.updating" && activity.summary === "Updating goal",
+        ) ?? false
+      );
+    });
+
+    resolveSlashCommand({
+      threadId: ThreadId.make("thread-1"),
+      command: {
+        name: "goal",
+        arguments: "improve benchmark coverage",
+      },
+      message: "Provider accepted the goal",
+      payload: {
+        goal: {
+          objective: "improve benchmark coverage",
+          status: "active",
+          tokenBudget: null,
+          tokensUsed: 1200,
+          timeUsedSeconds: 90,
+        },
+      },
+    });
+    await harness.drain();
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const slashActivities =
+      thread?.activities.filter((activity) => activity.kind.startsWith("provider.goal.")) ?? [];
+    expect(slashActivities).toHaveLength(1);
+    expect(slashActivities[0]).toMatchObject({
+      kind: "provider.goal.active",
+      summary: "Goal active",
+      payload: {
+        command: "goal",
+        arguments: "improve benchmark coverage",
+        submittedCommand: "/goal improve benchmark coverage",
+        detail: "Objective: improve benchmark coverage Time: 1m.",
+        goal: {
+          objective: "improve benchmark coverage",
+          status: "active",
+        },
+      },
+    });
   });
 
   it("generates a thread title on the first turn", async () => {
@@ -2075,7 +2171,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
+    await harness.runtime.runPromise(
       harness.engine.dispatch({
         type: "thread.session.stop",
         commandId: CommandId.make("cmd-session-stop"),

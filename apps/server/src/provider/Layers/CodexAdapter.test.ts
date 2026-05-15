@@ -41,6 +41,7 @@ import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
   type CodexSessionRuntimeOptions,
+  type CodexSessionRuntimeRunSlashCommandInput,
   type CodexSessionRuntimeSendTurnInput,
   type CodexSessionRuntimeShape,
   type CodexThreadSnapshot,
@@ -81,6 +82,17 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
         threadId: this.options.threadId,
         turnId: asTurnId("turn-1"),
       }),
+  );
+
+  public readonly runSlashCommandImpl = vi.fn((input: CodexSessionRuntimeRunSlashCommandInput) =>
+    Promise.resolve({
+      threadId: this.options.threadId,
+      command: {
+        name: input.name,
+        ...(input.arguments !== undefined ? { arguments: input.arguments } : {}),
+      },
+      message: `Provider command /${input.name} completed`,
+    }),
   );
 
   public readonly interruptTurnImpl = vi.fn(
@@ -129,6 +141,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   sendTurn(input: CodexSessionRuntimeSendTurnInput) {
     return Effect.promise(() => this.sendTurnImpl(input));
+  }
+
+  runSlashCommand(input: CodexSessionRuntimeRunSlashCommandInput) {
+    return Effect.promise(() => this.runSlashCommandImpl(input));
   }
 
   interruptTurn(turnId?: TurnId) {
@@ -356,6 +372,34 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         effort: "high",
         serviceTier: "priority",
       });
+    }),
+  );
+
+  it.effect("runs Codex /goal through the session runtime", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-goal"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.runSlashCommandImpl.mockClear();
+
+      const result = yield* adapter.runSlashCommand({
+        threadId: asThreadId("sess-goal"),
+        command: {
+          name: "goal",
+          arguments: "improve benchmark coverage",
+        },
+      });
+
+      assert.deepStrictEqual(runtime.runSlashCommandImpl.mock.calls[0]?.[0], {
+        name: "goal",
+        arguments: "improve benchmark coverage",
+      });
+      assert.equal(result.message, "Provider command /goal completed");
     }),
   );
 

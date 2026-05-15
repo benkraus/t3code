@@ -461,6 +461,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return [userMessageEvent, turnStartRequestedEvent];
     }
 
+    case "thread.provider-slash-command.run": {
+      const targetThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.provider-slash-command-requested",
+        payload: {
+          threadId: command.threadId,
+          command: command.command,
+          ...(command.arguments !== undefined ? { arguments: command.arguments } : {}),
+          ...(command.modelSelection !== undefined
+            ? { modelSelection: command.modelSelection }
+            : {}),
+          runtimeMode: targetThread.runtimeMode,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.turn.interrupt": {
       yield* requireThread({
         readModel,

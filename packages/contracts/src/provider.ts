@@ -77,6 +77,26 @@ export const ProviderSendTurnInput = Schema.Struct({
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 
+export const ProviderSlashCommandInvocation = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  arguments: Schema.optional(Schema.String),
+});
+export type ProviderSlashCommandInvocation = typeof ProviderSlashCommandInvocation.Type;
+
+export const ProviderRunSlashCommandInput = Schema.Struct({
+  threadId: ThreadId,
+  command: ProviderSlashCommandInvocation,
+});
+export type ProviderRunSlashCommandInput = typeof ProviderRunSlashCommandInput.Type;
+
+export const ProviderRunSlashCommandResult = Schema.Struct({
+  threadId: ThreadId,
+  command: ProviderSlashCommandInvocation,
+  message: Schema.optional(TrimmedNonEmptyString),
+  payload: Schema.optional(Schema.Unknown),
+});
+export type ProviderRunSlashCommandResult = typeof ProviderRunSlashCommandResult.Type;
+
 export const ProviderTurnStartResult = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,

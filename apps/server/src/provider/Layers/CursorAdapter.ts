@@ -1146,6 +1146,15 @@ export function makeCursorAdapter(
     const stopAll: CursorAdapterShape["stopAll"] = () =>
       Effect.forEach(sessions.values(), stopSessionInternal, { discard: true });
 
+    const runSlashCommand: CursorAdapterShape["runSlashCommand"] = (input) =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "provider/slash-command",
+          detail: `Cursor does not support native slash command dispatch for '/${input.command.name}' yet.`,
+        }),
+      );
+
     yield* Effect.addFinalizer(() =>
       Effect.forEach(sessions.values(), stopSessionInternal, { discard: true }).pipe(
         Effect.catch((cause) =>
@@ -1163,6 +1172,7 @@ export function makeCursorAdapter(
       capabilities: { sessionModelSwitch: "in-session" },
       startSession,
       sendTurn,
+      runSlashCommand,
       interruptTurn,
       readThread,
       rollbackThread,

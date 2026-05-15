@@ -3827,6 +3827,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return context !== undefined && !context.stopped;
     });
 
+  const runSlashCommand: ClaudeAdapterShape["runSlashCommand"] = (input) =>
+    Effect.fail(
+      new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "provider/slash-command",
+        detail: `Claude Agent does not support native slash command dispatch for '/${input.command.name}' yet.`,
+      }),
+    );
+
   const stopAll: ClaudeAdapterShape["stopAll"] = () =>
     Effect.forEach(
       sessions,
@@ -3860,6 +3869,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
     startSession,
     sendTurn,
+    runSlashCommand,
     interruptTurn,
     readThread,
     rollbackThread,

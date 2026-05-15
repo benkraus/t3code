@@ -978,6 +978,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const stopAll: GrokAdapterShape["stopAll"] = () =>
       Effect.forEach(Array.from(sessions.values()), stopSessionInternal, { discard: true });
 
+    const runSlashCommand: GrokAdapterShape["runSlashCommand"] = (input) =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "provider/slash-command",
+          detail: `Grok does not support native slash command dispatch for '/${input.command.name}' yet.`,
+        }),
+      );
+
     yield* Effect.addFinalizer(() =>
       Effect.ignore(stopAll()).pipe(
         Effect.tap(() => PubSub.shutdown(runtimeEventPubSub)),
@@ -992,6 +1001,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       capabilities: { sessionModelSwitch: "in-session" },
       startSession,
       sendTurn,
+      runSlashCommand,
       interruptTurn,
       readThread,
       rollbackThread,

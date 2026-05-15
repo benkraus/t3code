@@ -3,6 +3,8 @@ import * as Schema from "effect/Schema";
 
 import {
   ProviderEvent,
+  ProviderRunSlashCommandInput,
+  ProviderRunSlashCommandResult,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -10,6 +12,8 @@ import {
 
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
+const decodeProviderRunSlashCommandInput = Schema.decodeUnknownSync(ProviderRunSlashCommandInput);
+const decodeProviderRunSlashCommandResult = Schema.decodeUnknownSync(ProviderRunSlashCommandResult);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
 const decodeProviderEvent = Schema.decodeUnknownSync(ProviderEvent);
 
@@ -150,6 +154,40 @@ describe("ProviderSendTurnInput", () => {
     expect(parsed.modelSelection?.instanceId).toBe("claudeAgent");
     expect(getOptionValue(parsed.modelSelection?.options, "effort")).toBe("ultrathink");
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
+  });
+});
+
+describe("ProviderRunSlashCommandInput", () => {
+  it("accepts provider slash command invocations with arguments", () => {
+    const parsed = decodeProviderRunSlashCommandInput({
+      threadId: "thread-1",
+      command: {
+        name: " goal ",
+        arguments: "improve benchmark coverage",
+      },
+    });
+
+    expect(parsed.threadId).toBe("thread-1");
+    expect(parsed.command.name).toBe("goal");
+    expect(parsed.command.arguments).toBe("improve benchmark coverage");
+  });
+
+  it("accepts provider slash command results with a payload", () => {
+    const parsed = decodeProviderRunSlashCommandResult({
+      threadId: "thread-1",
+      command: {
+        name: "goal",
+      },
+      message: "Goal active",
+      payload: {
+        goal: {
+          objective: "ship it",
+        },
+      },
+    });
+
+    expect(parsed.command.name).toBe("goal");
+    expect(parsed.message).toBe("Goal active");
   });
 });
 

@@ -78,6 +78,7 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  pinned?: boolean;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -627,10 +628,12 @@ export function hasActionableProposedPlan(
 
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  latestTurnId?: TurnId,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
+    if (!isVisibleWorkLogActivity(activity, latestTurnId)) continue;
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;
@@ -642,6 +645,33 @@ export function deriveWorkLogEntries(
     const { activityKind, collapseKey: _collapseKey, ...rest } = entry;
     return Object.assign(rest, { sourceActivityKind: activityKind });
   });
+}
+
+function isVisibleWorkLogActivity(
+  activity: OrchestrationThreadActivity,
+  latestTurnId: TurnId | undefined,
+): boolean {
+  if (!latestTurnId) {
+    return true;
+  }
+  if (activity.turnId === latestTurnId) {
+    return true;
+  }
+  return isThreadLevelProviderSlashCommandActivity(activity);
+}
+
+function isThreadLevelProviderSlashCommandActivity(activity: OrchestrationThreadActivity): boolean {
+  return (
+    activity.turnId === null &&
+    (activity.kind === "provider.slash-command.started" ||
+      activity.kind === "provider.slash-command.completed" ||
+      activity.kind === "provider.slash-command.failed" ||
+      isProviderGoalActivity(activity))
+  );
+}
+
+function isProviderGoalActivity(activity: OrchestrationThreadActivity): boolean {
+  return activity.kind.startsWith("provider.goal.");
 }
 
 function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): boolean {
@@ -711,7 +741,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     turnId: activity.turnId,
     label: taskLabel || activity.summary,
     tone:
-      activity.kind === "task.progress"
+      activity.kind === "task.progress" ||
+      activity.kind === "provider.slash-command.started" ||
+      activity.kind === "provider.goal.updating" ||
+      activity.kind === "provider.goal.active"
         ? "thinking"
         : activity.tone === "approval"
           ? "info"
@@ -756,6 +789,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (toolLifecycleStatus) {
     entry.toolLifecycleStatus = toolLifecycleStatus;
+  }
+  if (isProviderGoalActivity(activity)) {
+    entry.pinned = true;
   }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
@@ -1355,15 +1391,21 @@ export function deriveTimelineEntries(
     createdAt: proposedPlan.createdAt,
     proposedPlan,
   }));
-  const workRows: TimelineEntry[] = workEntries.map((entry) => ({
+  const workRows: Array<Extract<TimelineEntry, { kind: "work" }>> = workEntries.map((entry) => ({
     id: entry.id,
     kind: "work",
     createdAt: entry.createdAt,
     entry,
   }));
-  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
-  );
+  const regularRows = [
+    ...messageRows,
+    ...proposedPlanRows,
+    ...workRows.filter((row) => !row.entry.pinned),
+  ].toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const pinnedRows = workRows
+    .filter((row) => row.entry.pinned)
+    .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return [...regularRows, ...pinnedRows];
 }
 
 export function inferCheckpointTurnCountByTurnId(

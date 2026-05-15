@@ -744,6 +744,44 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "thread/goal/updated") {
+    const payload = readPayload(EffectCodexSchema.V2ThreadGoalUpdatedNotification, event.payload);
+    return [
+      {
+        type: "thread.metadata.updated",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          ...(payload
+            ? {
+                metadata: {
+                  goal: payload.goal,
+                  turnId: payload.turnId,
+                },
+              }
+            : {}),
+          ...(event.payload !== undefined ? { detail: event.payload } : {}),
+        },
+      },
+    ];
+  }
+
+  if (event.method === "thread/goal/cleared") {
+    const payload = readPayload(EffectCodexSchema.V2ThreadGoalClearedNotification, event.payload);
+    return [
+      {
+        type: "thread.metadata.updated",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          metadata: {
+            goal: null,
+            ...(payload ? { threadId: payload.threadId } : {}),
+          },
+          ...(event.payload !== undefined ? { detail: event.payload } : {}),
+        },
+      },
+    ];
+  }
+
   if (event.method === "turn/started") {
     const turnId = event.turnId;
     if (!turnId) {
@@ -1564,6 +1602,30 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     return session;
   });
 
+  const runSlashCommand: CodexAdapterShape["runSlashCommand"] = Effect.fn("runSlashCommand")(
+    function* (input) {
+      const commandName = input.command.name.trim().toLowerCase();
+      if (commandName !== "goal") {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "provider/slash-command",
+          detail: `Unsupported Codex slash command '/${input.command.name}'.`,
+        });
+      }
+      const session = yield* requireSession(input.threadId);
+      return yield* session.runtime
+        .runSlashCommand({
+          name: commandName,
+          ...(input.command.arguments !== undefined ? { arguments: input.command.arguments } : {}),
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            mapCodexRuntimeError(input.threadId, `slash-command/${commandName}`, cause),
+          ),
+        );
+    },
+  );
+
   const interruptTurn: CodexAdapterShape["interruptTurn"] = (threadId, turnId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) => session.runtime.interruptTurn(turnId)),
@@ -1697,6 +1759,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     },
     startSession,
     sendTurn,
+    runSlashCommand,
     interruptTurn,
     readThread,
     rollbackThread,

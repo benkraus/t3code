@@ -17,6 +17,8 @@ import type {
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
+  ProviderRunSlashCommandInput,
+  ProviderRunSlashCommandResult,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -50,6 +52,13 @@ export interface ProviderServiceShape {
   readonly sendTurn: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
+
+  /**
+   * Run a provider-native slash command.
+   */
+  readonly runSlashCommand: (
+    input: ProviderRunSlashCommandInput,
+  ) => Effect.Effect<ProviderRunSlashCommandResult, ProviderServiceError>;
 
   /**
    * Interrupt a running provider turn.

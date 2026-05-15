@@ -400,6 +400,17 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
         } satisfies ProviderTurnStartResult;
       });
 
+    const runSlashCommand: ProviderAdapterShape<ProviderAdapterError>["runSlashCommand"] = (
+      input,
+    ) =>
+      Effect.fail(
+        new ProviderAdapterValidationError({
+          provider,
+          operation: "runSlashCommand",
+          issue: `Unsupported provider slash command '/${input.command.name}'.`,
+        }),
+      );
+
     const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = (
       threadId,
       turnId,
@@ -495,6 +506,7 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
       },
       startSession,
       sendTurn,
+      runSlashCommand,
       interruptTurn,
       respondToRequest,
       respondToUserInput,

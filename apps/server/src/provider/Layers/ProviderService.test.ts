@@ -6,6 +6,8 @@ import path from "node:path";
 import type {
   ProviderApprovalDecision,
   ProviderRuntimeEvent,
+  ProviderRunSlashCommandInput,
+  ProviderRunSlashCommandResult,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderTurnStartResult,
@@ -140,6 +142,25 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       Effect.void,
   );
 
+  const runSlashCommand = vi.fn(
+    (
+      input: ProviderRunSlashCommandInput,
+    ): Effect.Effect<ProviderRunSlashCommandResult, ProviderAdapterError> =>
+      Effect.gen(function* () {
+        if (!sessions.has(input.threadId)) {
+          return yield* new ProviderAdapterSessionNotFoundError({
+            provider,
+            threadId: input.threadId,
+          });
+        }
+        return {
+          threadId: input.threadId,
+          command: input.command,
+          message: `Provider command /${input.command.name} completed`,
+        };
+      }),
+  );
+
   const respondToRequest = vi.fn(
     (
       _threadId: ThreadId,
@@ -210,6 +231,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     },
     startSession,
     sendTurn,
+    runSlashCommand,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -245,6 +267,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     updateSession,
     startSession,
     sendTurn,
+    runSlashCommand,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -801,6 +824,22 @@ routing.layer("ProviderServiceLive routing", (it) => {
         attachments: [],
       });
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+
+      const slashResult = yield* provider.runSlashCommand({
+        threadId: session.threadId,
+        command: {
+          name: "goal",
+          arguments: "improve benchmark coverage",
+        },
+      });
+      assert.equal(slashResult.message, "Provider command /goal completed");
+      assert.deepEqual(routing.codex.runSlashCommand.mock.calls[0]?.[0], {
+        threadId: session.threadId,
+        command: {
+          name: "goal",
+          arguments: "improve benchmark coverage",
+        },
+      });
 
       yield* provider.interruptTurn({ threadId: session.threadId });
       assert.deepEqual(routing.codex.interruptTurn.mock.calls, [[session.threadId, undefined]]);

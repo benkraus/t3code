@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
   CommandId,
+  EventId,
   MessageId,
   type OrchestrationEvent,
   type OrchestrationMessage,
@@ -164,6 +165,133 @@ function maxCheckpointTurnCount(
 
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
+}
+
+type ProviderGoalStatus = "active" | "paused" | "budgetLimited" | "complete";
+
+interface ProviderGoalSnapshot {
+  readonly objective: string;
+  readonly status: ProviderGoalStatus;
+  readonly tokenBudget: number | null;
+  readonly tokensUsed: number;
+  readonly timeUsedSeconds: number;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readProviderGoalStatus(value: unknown): ProviderGoalStatus | null {
+  return value === "active" ||
+    value === "paused" ||
+    value === "budgetLimited" ||
+    value === "complete"
+    ? value
+    : null;
+}
+
+function readProviderGoalSnapshot(value: unknown): ProviderGoalSnapshot | null {
+  const goal = asRecord(value);
+  const status = readProviderGoalStatus(goal?.status);
+  if (
+    !goal ||
+    status === null ||
+    typeof goal.objective !== "string" ||
+    typeof goal.tokensUsed !== "number" ||
+    typeof goal.timeUsedSeconds !== "number"
+  ) {
+    return null;
+  }
+  const rawTokenBudget = goal.tokenBudget;
+  return {
+    objective: goal.objective,
+    status,
+    tokenBudget: typeof rawTokenBudget === "number" ? rawTokenBudget : null,
+    tokensUsed: goal.tokensUsed,
+    timeUsedSeconds: goal.timeUsedSeconds,
+  };
+}
+
+function providerGoalActivityId(threadId: ThreadId): EventId {
+  return EventId.make(`provider-goal:${threadId}`);
+}
+
+function formatProviderGoalElapsedSeconds(value: number): string {
+  const seconds = Math.max(0, Math.floor(value));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
+}
+
+function formatProviderGoalTokenCount(value: number): string {
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (absolute >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+  return String(value);
+}
+
+function formatProviderGoalDetail(goal: ProviderGoalSnapshot): string {
+  const parts = [`Objective: ${goal.objective}`];
+  if (goal.timeUsedSeconds > 0) {
+    parts.push(`Time: ${formatProviderGoalElapsedSeconds(goal.timeUsedSeconds)}.`);
+  }
+  if (goal.tokenBudget !== null) {
+    parts.push(
+      `Tokens: ${formatProviderGoalTokenCount(goal.tokensUsed)}/${formatProviderGoalTokenCount(
+        goal.tokenBudget,
+      )}.`,
+    );
+  }
+  return parts.join(" ");
+}
+
+function providerGoalSummary(status: ProviderGoalStatus): string {
+  switch (status) {
+    case "active":
+      return "Goal active";
+    case "paused":
+      return "Goal paused";
+    case "budgetLimited":
+      return "Goal budget limited";
+    case "complete":
+      return "Goal completed";
+    default:
+      status satisfies never;
+      return "Goal updated";
+  }
+}
+
+function providerGoalActivityKind(status: ProviderGoalStatus): string {
+  switch (status) {
+    case "active":
+      return "provider.goal.active";
+    case "paused":
+      return "provider.goal.paused";
+    case "budgetLimited":
+      return "provider.goal.budget-limited";
+    case "complete":
+      return "provider.goal.completed";
+    default:
+      status satisfies never;
+      return "provider.goal.updated";
+  }
+}
+
+function hasProviderGoalActivity(activities: ReadonlyArray<OrchestrationThreadActivity>): boolean {
+  return activities.some((activity) => activity.kind.startsWith("provider.goal."));
+}
+
+function readProviderGoalMetadata(event: ProviderRuntimeEvent): unknown {
+  if (event.type !== "thread.metadata.updated") {
+    return undefined;
+  }
+  const metadata = asRecord(event.payload.metadata);
+  return metadata && "goal" in metadata ? metadata.goal : undefined;
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
@@ -529,6 +657,38 @@ function runtimeEventToActivities(
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "thread.metadata.updated": {
+      const metadata = asRecord(event.payload.metadata);
+      if (!metadata || !("goal" in metadata)) {
+        return [];
+      }
+
+      if (metadata.goal === null) {
+        return [];
+      }
+
+      const goal = readProviderGoalSnapshot(metadata.goal);
+      if (!goal) {
+        return [];
+      }
+
+      return [
+        {
+          id: providerGoalActivityId(event.threadId),
+          createdAt: event.createdAt,
+          tone: goal.status === "budgetLimited" ? "error" : "info",
+          kind: providerGoalActivityKind(goal.status),
+          summary: providerGoalSummary(goal.status),
+          payload: {
+            goal,
+            detail: formatProviderGoalDetail(goal),
+          },
+          turnId: null,
           ...maybeSequence,
         },
       ];
@@ -1654,7 +1814,15 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(event);
+      const goalMetadata = readProviderGoalMetadata(event);
+      const shouldProjectGoalMetadata =
+        goalMetadata !== undefined && goalMetadata !== null
+          ? hasProviderGoalActivity((yield* getLoadedThreadDetail())?.activities ?? [])
+          : false;
+      const activities =
+        goalMetadata === undefined || shouldProjectGoalMetadata
+          ? runtimeEventToActivities(event)
+          : [];
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
           Effect.flatMap((commandId) =>

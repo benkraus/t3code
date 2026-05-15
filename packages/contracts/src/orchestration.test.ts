@@ -17,6 +17,7 @@ import {
   OrchestrationSession,
   ProjectCreateCommand,
   ThreadMetaUpdatedPayload,
+  ThreadProviderSlashCommandRequestedPayload,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
   ThreadTurnDiff,
@@ -31,6 +32,9 @@ const decodeProjectCreateCommand = Schema.decodeUnknownEffect(ProjectCreateComma
 const decodeProjectCreatedPayload = Schema.decodeUnknownEffect(ProjectCreatedPayload);
 const decodeProjectMetaUpdatedPayload = Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload);
 const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartCommand);
+const decodeThreadProviderSlashCommandRequestedPayload = Schema.decodeUnknownEffect(
+  ThreadProviderSlashCommandRequestedPayload,
+);
 const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
 );
@@ -244,6 +248,45 @@ it.effect("preserves explicit provider and runtime mode in thread.turn.start", (
     assert.strictEqual(parsed.modelSelection?.instanceId, "codex");
     assert.strictEqual(parsed.runtimeMode, "full-access");
     assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+  }),
+);
+
+it.effect("decodes provider slash command run commands", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.provider-slash-command.run",
+      commandId: "cmd-provider-slash-1",
+      threadId: "thread-1",
+      command: "goal",
+      arguments: "improve benchmark coverage",
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.3-codex",
+      },
+      runtimeMode: "full-access",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.provider-slash-command.run");
+    if (parsed.type !== "thread.provider-slash-command.run") return;
+    assert.strictEqual(parsed.command, "goal");
+    assert.strictEqual(parsed.arguments, "improve benchmark coverage");
+    assert.strictEqual(parsed.modelSelection?.instanceId, "codex");
+  }),
+);
+
+it.effect("decodes provider slash command requested payloads", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadProviderSlashCommandRequestedPayload({
+      threadId: "thread-1",
+      command: "goal",
+      arguments: "pause",
+      runtimeMode: "full-access",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.command, "goal");
+    assert.strictEqual(parsed.arguments, "pause");
   }),
 );
 

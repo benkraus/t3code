@@ -266,6 +266,7 @@ function makeCodexProbeSnapshot(
         capabilities: codexModelCapabilities,
       },
     ],
+    slashCommands: [],
     skills: [],
     ...input,
   };

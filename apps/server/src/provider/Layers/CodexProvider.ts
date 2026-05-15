@@ -19,6 +19,7 @@ import type {
   ModelCapabilities,
   ProviderOptionDescriptor,
   ServerProviderModel,
+  ServerProviderSlashCommand,
   ServerProviderSkill,
 } from "@t3tools/contracts";
 import { ServerSettingsError } from "@t3tools/contracts";
@@ -40,11 +41,21 @@ const CODEX_PRESENTATION = {
   displayName: "Codex",
   showInteractionModeToggle: true,
 } as const;
+const CODEX_SLASH_COMMANDS = [
+  {
+    name: "goal",
+    description: "Set or view the goal for a long-running task",
+    input: {
+      hint: "<objective>, clear, pause, or resume",
+    },
+  },
+] satisfies ReadonlyArray<ServerProviderSlashCommand>;
 
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
+  readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
 }
 
@@ -350,6 +361,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       account: accountResponse,
       version,
       models: appendCustomCodexModels([], input.customModels ?? []),
+      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
     } satisfies CodexAppServerProviderSnapshot;
   }
@@ -368,6 +380,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     account: accountResponse,
     version,
     models: appendCustomCodexModels(models, input.customModels ?? []),
+    slashCommands: CODEX_SLASH_COMMANDS,
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
   } satisfies CodexAppServerProviderSnapshot;
 });
@@ -401,6 +414,7 @@ const makePendingCodexProvider = (
         enabled: false,
         checkedAt,
         models,
+        slashCommands: CODEX_SLASH_COMMANDS,
         skills: [],
         probe: {
           installed: false,
@@ -417,6 +431,7 @@ const makePendingCodexProvider = (
       enabled: true,
       checkedAt,
       models,
+      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed: false,
@@ -486,6 +501,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       enabled: false,
       checkedAt,
       models: emptyModels,
+      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed: false,
@@ -517,6 +533,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       enabled: codexSettings.enabled,
       checkedAt,
       models: emptyModels,
+      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed,
@@ -536,6 +553,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       enabled: codexSettings.enabled,
       checkedAt,
       models: emptyModels,
+      slashCommands: CODEX_SLASH_COMMANDS,
       skills: [],
       probe: {
         installed: true,
@@ -555,6 +573,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     enabled: codexSettings.enabled,
     checkedAt,
     models: snapshot.models,
+    slashCommands: snapshot.slashCommands,
     skills: snapshot.skills,
     probe: {
       installed: true,

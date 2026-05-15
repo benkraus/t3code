@@ -16,6 +16,7 @@ import {
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
+  ProviderRunSlashCommandInput,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
@@ -717,6 +718,55 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const runSlashCommand: ProviderServiceShape["runSlashCommand"] = Effect.fn("runSlashCommand")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.runSlashCommand",
+        schema: ProviderRunSlashCommandInput,
+        payload: rawInput,
+      });
+      let metricProvider = "unknown";
+      return yield* Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.runSlashCommand",
+          allowRecovery: true,
+        });
+        metricProvider = routed.adapter.provider;
+        yield* Effect.annotateCurrentSpan({
+          "provider.operation": "run-slash-command",
+          "provider.kind": routed.adapter.provider,
+          "provider.thread_id": input.threadId,
+          "provider.slash_command": input.command.name,
+        });
+        const result = yield* routed.adapter.runSlashCommand(input);
+        yield* directory.upsert({
+          threadId: input.threadId,
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          status: "running",
+          runtimePayload: {
+            lastRuntimeEvent: "provider.runSlashCommand",
+            lastRuntimeEventAt: yield* nowIso,
+          },
+        });
+        yield* analytics.record("provider.slash_command.run", {
+          provider: routed.adapter.provider,
+          command: input.command.name,
+        });
+        return result;
+      }).pipe(
+        withMetrics({
+          counter: providerTurnsTotal,
+          outcomeAttributes: () =>
+            providerMetricAttributes(metricProvider, {
+              operation: "slash-command",
+            }),
+        }),
+      );
+    },
+  );
+
   const interruptTurn: ProviderServiceShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1060,6 +1110,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   return {
     startSession,
     sendTurn,
+    runSlashCommand,
     interruptTurn,
     respondToRequest,
     respondToUserInput,

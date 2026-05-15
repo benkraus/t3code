@@ -9,6 +9,7 @@ import {
   type ProviderEvent,
   type ProviderInteractionMode,
   type ProviderRequestKind,
+  type ProviderRunSlashCommandResult,
   type ProviderSession,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
@@ -45,6 +46,7 @@ import {
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
+const CODEX_THREAD_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
 
 const ANSI_ESCAPE_CHAR = String.fromCharCode(27);
 const ANSI_ESCAPE_REGEX = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
@@ -87,6 +89,35 @@ const decodeCodexTurnStartParamsWithCollaborationMode = Schema.decodeUnknownEffe
   CodexTurnStartParamsWithCollaborationMode,
 );
 
+const CodexThreadGoalStatus = Schema.Literals(["active", "paused", "budgetLimited", "complete"]);
+type CodexThreadGoalStatus = typeof CodexThreadGoalStatus.Type;
+
+const CodexThreadGoal = Schema.Struct({
+  threadId: Schema.String,
+  objective: Schema.String,
+  status: CodexThreadGoalStatus,
+  tokenBudget: Schema.NullOr(Schema.Number),
+  tokensUsed: Schema.Number,
+  timeUsedSeconds: Schema.Number,
+  createdAt: Schema.Number,
+  updatedAt: Schema.Number,
+});
+type CodexThreadGoal = typeof CodexThreadGoal.Type;
+
+const CodexThreadGoalSetResponse = Schema.Struct({
+  goal: CodexThreadGoal,
+});
+const CodexThreadGoalGetResponse = Schema.Struct({
+  goal: Schema.NullOr(CodexThreadGoal),
+});
+const CodexThreadGoalClearResponse = Schema.Struct({
+  cleared: Schema.Boolean,
+});
+
+const decodeCodexThreadGoalSetResponse = Schema.decodeUnknownEffect(CodexThreadGoalSetResponse);
+const decodeCodexThreadGoalGetResponse = Schema.decodeUnknownEffect(CodexThreadGoalGetResponse);
+const decodeCodexThreadGoalClearResponse = Schema.decodeUnknownEffect(CodexThreadGoalClearResponse);
+
 export type CodexTurnStartParamsWithCollaborationMode =
   typeof CodexTurnStartParamsWithCollaborationMode.Type;
 const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
@@ -123,6 +154,11 @@ export interface CodexSessionRuntimeSendTurnInput {
   readonly interactionMode?: ProviderInteractionMode;
 }
 
+export interface CodexSessionRuntimeRunSlashCommandInput {
+  readonly name: string;
+  readonly arguments?: string;
+}
+
 export interface CodexThreadTurnSnapshot {
   readonly id: TurnId;
   readonly items: ReadonlyArray<CodexThreadItem>;
@@ -139,6 +175,9 @@ export interface CodexSessionRuntimeShape {
   readonly sendTurn: (
     input: CodexSessionRuntimeSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly runSlashCommand: (
+    input: CodexSessionRuntimeRunSlashCommandInput,
+  ) => Effect.Effect<ProviderRunSlashCommandResult, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
@@ -161,6 +200,7 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
+  | CodexSessionRuntimeInvalidSlashCommandError
   | CodexSessionRuntimeThreadIdMissingError;
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
@@ -193,6 +233,18 @@ export class CodexSessionRuntimeInvalidUserInputAnswersError extends Schema.Tagg
 ) {
   override get message(): string {
     return `Invalid Codex user input answers for question '${this.questionId}'`;
+  }
+}
+
+export class CodexSessionRuntimeInvalidSlashCommandError extends Schema.TaggedErrorClass<CodexSessionRuntimeInvalidSlashCommandError>()(
+  "CodexSessionRuntimeInvalidSlashCommandError",
+  {
+    command: Schema.String,
+    detail: Schema.String,
+  },
+) {
+  override get message(): string {
+    return this.detail;
   }
 }
 
@@ -262,6 +314,76 @@ function readResumeCursorThreadId(
   resumeCursor: ProviderSession["resumeCursor"],
 ): string | undefined {
   return isCodexResumeCursorSchema(resumeCursor) ? resumeCursor.threadId : undefined;
+}
+
+function codexGoalStatusLabel(status: CodexThreadGoalStatus): string {
+  switch (status) {
+    case "active":
+      return "active";
+    case "paused":
+      return "paused";
+    case "budgetLimited":
+      return "limited by budget";
+    case "complete":
+      return "complete";
+    default:
+      status satisfies never;
+      return "unknown";
+  }
+}
+
+function formatCodexGoalElapsedSeconds(value: number): string {
+  const seconds = Math.max(0, Math.floor(value));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    return `${days}d ${remainingHours}h ${remainingMinutes}m`;
+  }
+  return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
+}
+
+function formatCodexGoalTokenCount(value: number): string {
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (absolute >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+  return String(value);
+}
+
+function codexGoalUsageSummary(goal: CodexThreadGoal): string {
+  const parts = [`Objective: ${goal.objective}`];
+  if (goal.timeUsedSeconds > 0) {
+    parts.push(`Time: ${formatCodexGoalElapsedSeconds(goal.timeUsedSeconds)}.`);
+  }
+  if (goal.tokenBudget !== null) {
+    parts.push(
+      `Tokens: ${formatCodexGoalTokenCount(goal.tokensUsed)}/${formatCodexGoalTokenCount(
+        goal.tokenBudget,
+      )}.`,
+    );
+  }
+  return parts.join(" ");
+}
+
+function goalResult(input: {
+  readonly threadId: ThreadId;
+  readonly arguments?: string;
+  readonly message: string;
+  readonly payload?: unknown;
+}): ProviderRunSlashCommandResult {
+  return {
+    threadId: input.threadId,
+    command: {
+      name: "goal",
+      ...(input.arguments !== undefined ? { arguments: input.arguments } : {}),
+    },
+    message: input.message,
+    ...(input.payload !== undefined ? { payload: input.payload } : {}),
+  };
 }
 
 function runtimeModeToThreadConfig(input: RuntimeMode): {
@@ -485,6 +607,8 @@ function readNotificationThreadId(notification: CodexServerNotification): string
     case "thread/closed":
     case "thread/name/updated":
     case "thread/tokenUsage/updated":
+    case "thread/goal/updated":
+    case "thread/goal/cleared":
     case "turn/started":
     case "hook/started":
     case "turn/completed":
@@ -1310,6 +1434,125 @@ export const makeCodexSessionRuntime = (
               ? { resumeCursor: { threadId: resumedProviderThreadId } }
               : {}),
           } satisfies ProviderTurnStartResult;
+        }),
+      runSlashCommand: (input) =>
+        Effect.gen(function* () {
+          const commandName = input.name.trim().toLowerCase();
+          if (commandName !== "goal") {
+            return yield* new CodexSessionRuntimeInvalidSlashCommandError({
+              command: input.name,
+              detail: `Unsupported Codex slash command '/${input.name}'.`,
+            });
+          }
+
+          const providerThreadId = yield* readProviderThreadId;
+          const rawArguments = input.arguments;
+          const args = rawArguments?.trim() ?? "";
+          const resultArguments =
+            rawArguments !== undefined && rawArguments.trim().length > 0
+              ? rawArguments.trim()
+              : undefined;
+
+          if (args.length === 0) {
+            const rawResponse = yield* client.raw.request("thread/goal/get", {
+              threadId: providerThreadId,
+            });
+            const response = yield* decodeCodexThreadGoalGetResponse(rawResponse).pipe(
+              Effect.mapError((error) =>
+                toProtocolParseError("Invalid thread/goal/get response payload", error),
+              ),
+            );
+            if (!response.goal) {
+              return goalResult({
+                threadId: options.threadId,
+                ...(resultArguments !== undefined ? { arguments: resultArguments } : {}),
+                message: "No goal is currently set. Usage: /goal <objective>",
+                payload: response,
+              });
+            }
+            return goalResult({
+              threadId: options.threadId,
+              ...(resultArguments !== undefined ? { arguments: resultArguments } : {}),
+              message: `Goal ${codexGoalStatusLabel(response.goal.status)}. ${codexGoalUsageSummary(
+                response.goal,
+              )}`,
+              payload: response,
+            });
+          }
+
+          switch (args.toLowerCase()) {
+            case "clear": {
+              const rawResponse = yield* client.raw.request("thread/goal/clear", {
+                threadId: providerThreadId,
+              });
+              const response = yield* decodeCodexThreadGoalClearResponse(rawResponse).pipe(
+                Effect.mapError((error) =>
+                  toProtocolParseError("Invalid thread/goal/clear response payload", error),
+                ),
+              );
+              return goalResult({
+                threadId: options.threadId,
+                ...(resultArguments !== undefined ? { arguments: resultArguments } : {}),
+                message: response.cleared
+                  ? "Goal cleared"
+                  : "No goal to clear. This thread does not currently have a goal.",
+                payload: response,
+              });
+            }
+            case "pause":
+            case "resume": {
+              const status: CodexThreadGoalStatus =
+                args.toLowerCase() === "pause" ? "paused" : "active";
+              const rawResponse = yield* client.raw.request("thread/goal/set", {
+                threadId: providerThreadId,
+                objective: null,
+                status,
+                tokenBudget: null,
+              });
+              const response = yield* decodeCodexThreadGoalSetResponse(rawResponse).pipe(
+                Effect.mapError((error) =>
+                  toProtocolParseError("Invalid thread/goal/set response payload", error),
+                ),
+              );
+              return goalResult({
+                threadId: options.threadId,
+                ...(resultArguments !== undefined ? { arguments: resultArguments } : {}),
+                message: `Goal ${codexGoalStatusLabel(response.goal.status)}. ${codexGoalUsageSummary(
+                  response.goal,
+                )}`,
+                payload: response,
+              });
+            }
+            default: {
+              const objective = args;
+              const objectiveChars = Array.from(objective).length;
+              if (objectiveChars > CODEX_THREAD_GOAL_OBJECTIVE_MAX_CHARS) {
+                return yield* new CodexSessionRuntimeInvalidSlashCommandError({
+                  command: "goal",
+                  detail: `Goal objective is too long: ${objectiveChars.toLocaleString()} characters. Limit: ${CODEX_THREAD_GOAL_OBJECTIVE_MAX_CHARS.toLocaleString()} characters. Put longer instructions in a file and refer to that file in the goal, for example: /goal follow the instructions in docs/goal.md.`,
+                });
+              }
+              const rawResponse = yield* client.raw.request("thread/goal/set", {
+                threadId: providerThreadId,
+                objective,
+                status: "active",
+                tokenBudget: null,
+              });
+              const response = yield* decodeCodexThreadGoalSetResponse(rawResponse).pipe(
+                Effect.mapError((error) =>
+                  toProtocolParseError("Invalid thread/goal/set response payload", error),
+                ),
+              );
+              return goalResult({
+                threadId: options.threadId,
+                ...(resultArguments !== undefined ? { arguments: resultArguments } : {}),
+                message: `Goal ${codexGoalStatusLabel(response.goal.status)}. ${codexGoalUsageSummary(
+                  response.goal,
+                )}`,
+                payload: response,
+              });
+            }
+          }
         }),
       interruptTurn: (turnId) =>
         Effect.gen(function* () {

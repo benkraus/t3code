@@ -797,6 +797,46 @@ describe("deriveWorkLogEntries", () => {
     ]);
   });
 
+  it("keeps thread-level provider slash command feedback when filtering by latest turn", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "provider-goal",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "provider.goal.active",
+        summary: "Goal active",
+        tone: "info",
+        payload: {
+          command: "goal",
+          arguments: "improve benchmark coverage",
+          submittedCommand: "/goal improve benchmark coverage",
+          detail: "Objective: improve benchmark coverage",
+        },
+      }),
+      makeActivity({
+        id: "turn-2",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        turnId: "turn-2",
+        summary: "Tool call complete",
+        kind: "tool.completed",
+      }),
+      makeActivity({
+        id: "unrelated-no-turn",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        summary: "Checkpoint captured",
+        tone: "info",
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, TurnId.make("turn-2"));
+    expect(entries.map((entry) => entry.id)).toEqual(["provider-goal", "turn-2"]);
+    expect(entries[0]).toMatchObject({
+      label: "Goal active",
+      tone: "thinking",
+      detail: "Objective: improve benchmark coverage",
+      pinned: true,
+    });
+  });
+
   it("omits checkpoint captured info entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1534,6 +1574,39 @@ describe("deriveTimelineEntries", () => {
         implementationThreadId: null,
       },
     });
+  });
+
+  it("keeps pinned goal status work entries at the bottom", () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("message-1"),
+          role: "assistant",
+          text: "working",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          streaming: false,
+        },
+      ],
+      [],
+      [
+        {
+          id: "provider-goal",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          label: "Goal active",
+          detail: "Objective: improve benchmark coverage",
+          tone: "thinking",
+          pinned: true,
+        },
+        {
+          id: "work-1",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          label: "Ran tests",
+          tone: "tool",
+        },
+      ],
+    );
+
+    expect(entries.map((entry) => entry.id)).toEqual(["work-1", "message-1", "provider-goal"]);
   });
 });
 

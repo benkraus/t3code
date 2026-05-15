@@ -50,6 +50,7 @@ type ProviderIntentEvent = Extract<
     type:
       | "thread.runtime-mode-set"
       | "thread.turn-start-requested"
+      | "thread.provider-slash-command-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
@@ -87,6 +88,136 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
+
+function formatProviderSlashCommand(command: string, commandArguments: string | undefined): string {
+  const normalizedArguments = commandArguments?.trim();
+  return normalizedArguments && normalizedArguments.length > 0
+    ? `/${command} ${normalizedArguments}`
+    : `/${command}`;
+}
+
+type ProviderGoalStatus = "active" | "paused" | "budgetLimited" | "complete";
+
+interface ProviderGoalSnapshot {
+  readonly objective: string;
+  readonly status: ProviderGoalStatus;
+  readonly tokenBudget: number | null;
+  readonly tokensUsed: number;
+  readonly timeUsedSeconds: number;
+}
+
+function providerGoalActivityId(threadId: ThreadId): EventId {
+  return EventId.make(`provider-goal:${threadId}`);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readProviderGoalStatus(value: unknown): ProviderGoalStatus | null {
+  return value === "active" ||
+    value === "paused" ||
+    value === "budgetLimited" ||
+    value === "complete"
+    ? value
+    : null;
+}
+
+function readProviderGoalSnapshot(value: unknown): ProviderGoalSnapshot | null {
+  const goal = asRecord(value);
+  const status = readProviderGoalStatus(goal?.status);
+  if (
+    !goal ||
+    status === null ||
+    typeof goal.objective !== "string" ||
+    typeof goal.tokensUsed !== "number" ||
+    typeof goal.timeUsedSeconds !== "number"
+  ) {
+    return null;
+  }
+  const rawTokenBudget = goal.tokenBudget;
+  return {
+    objective: goal.objective,
+    status,
+    tokenBudget: typeof rawTokenBudget === "number" ? rawTokenBudget : null,
+    tokensUsed: goal.tokensUsed,
+    timeUsedSeconds: goal.timeUsedSeconds,
+  };
+}
+
+function readProviderGoalFromResultPayload(payload: unknown): ProviderGoalSnapshot | null {
+  return readProviderGoalSnapshot(asRecord(payload)?.goal);
+}
+
+function isProviderGoalClearedResult(payload: unknown): boolean {
+  return asRecord(payload)?.cleared === true;
+}
+
+function formatProviderGoalElapsedSeconds(value: number): string {
+  const seconds = Math.max(0, Math.floor(value));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
+}
+
+function formatProviderGoalTokenCount(value: number): string {
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (absolute >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+  return String(value);
+}
+
+function formatProviderGoalDetail(goal: ProviderGoalSnapshot): string {
+  const parts = [`Objective: ${goal.objective}`];
+  if (goal.timeUsedSeconds > 0) {
+    parts.push(`Time: ${formatProviderGoalElapsedSeconds(goal.timeUsedSeconds)}.`);
+  }
+  if (goal.tokenBudget !== null) {
+    parts.push(
+      `Tokens: ${formatProviderGoalTokenCount(goal.tokensUsed)}/${formatProviderGoalTokenCount(
+        goal.tokenBudget,
+      )}.`,
+    );
+  }
+  return parts.join(" ");
+}
+
+function providerGoalSummary(status: ProviderGoalStatus): string {
+  switch (status) {
+    case "active":
+      return "Goal active";
+    case "paused":
+      return "Goal paused";
+    case "budgetLimited":
+      return "Goal budget limited";
+    case "complete":
+      return "Goal completed";
+    default:
+      status satisfies never;
+      return "Goal updated";
+  }
+}
+
+function providerGoalActivityKind(status: ProviderGoalStatus): string {
+  switch (status) {
+    case "active":
+      return "provider.goal.active";
+    case "paused":
+      return "provider.goal.paused";
+    case "budgetLimited":
+      return "provider.goal.budget-limited";
+    case "complete":
+      return "provider.goal.completed";
+    default:
+      status satisfies never;
+      return "provider.goal.updated";
+  }
+}
 
 export function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
@@ -218,6 +349,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly kind:
       | "provider.turn.start.failed"
+      | "provider.slash-command.failed"
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
@@ -252,6 +384,47 @@ const make = Effect.gen(function* () {
           createdAt: input.createdAt,
         }),
       ),
+    );
+
+  const appendProviderSlashCommandActivity = (input: {
+    readonly threadId: ThreadId;
+    readonly activityId: EventId;
+    readonly command: string;
+    readonly arguments?: string;
+    readonly kind: string;
+    readonly tone: "info" | "error";
+    readonly summary: string;
+    readonly detail?: string;
+    readonly payload?: unknown;
+    readonly goal?: ProviderGoalSnapshot;
+    readonly createdAt: string;
+  }) =>
+    serverCommandId("provider-slash-command-activity").pipe(
+      Effect.flatMap((commandId) =>
+        orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId,
+          threadId: input.threadId,
+          activity: {
+            id: input.activityId,
+            tone: input.tone,
+            kind: input.kind,
+            summary: input.summary,
+            payload: {
+              command: input.command,
+              submittedCommand: formatProviderSlashCommand(input.command, input.arguments),
+              ...(input.arguments !== undefined ? { arguments: input.arguments } : {}),
+              ...(input.detail !== undefined ? { detail: input.detail } : {}),
+              ...(input.goal !== undefined ? { goal: input.goal } : {}),
+              ...(input.payload !== undefined ? { result: input.payload } : {}),
+            },
+            turnId: null,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+        }),
+      ),
+      Effect.asVoid,
     );
 
   const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
@@ -860,6 +1033,157 @@ const make = Effect.gen(function* () {
       .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
   });
 
+  const processProviderSlashCommandRequested = Effect.fn("processProviderSlashCommandRequested")(
+    function* (
+      event: Extract<ProviderIntentEvent, { type: "thread.provider-slash-command-requested" }>,
+    ) {
+      const thread = yield* resolveThread(event.payload.threadId);
+      if (!thread) {
+        return;
+      }
+
+      const isGoalCommand = event.payload.command.trim().toLowerCase() === "goal";
+      const activityId = isGoalCommand
+        ? providerGoalActivityId(event.payload.threadId)
+        : EventId.make(yield* crypto.randomUUIDv4);
+      const submittedCommand = formatProviderSlashCommand(
+        event.payload.command,
+        event.payload.arguments,
+      );
+
+      const handleSlashCommandFailure = (cause: Cause.Cause<unknown>) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.void;
+        }
+        return appendProviderSlashCommandActivity({
+          threadId: event.payload.threadId,
+          activityId,
+          command: event.payload.command,
+          ...(event.payload.arguments !== undefined ? { arguments: event.payload.arguments } : {}),
+          kind: isGoalCommand ? "provider.goal.failed" : "provider.slash-command.failed",
+          tone: "error",
+          summary: isGoalCommand ? "Goal update failed" : `Failed ${submittedCommand}`,
+          detail: formatFailureDetail(cause),
+          createdAt: event.payload.createdAt,
+        });
+      };
+
+      yield* appendProviderSlashCommandActivity({
+        threadId: event.payload.threadId,
+        activityId,
+        command: event.payload.command,
+        ...(event.payload.arguments !== undefined ? { arguments: event.payload.arguments } : {}),
+        kind: isGoalCommand ? "provider.goal.updating" : "provider.slash-command.started",
+        tone: "info",
+        summary: isGoalCommand ? "Updating goal" : `Running ${submittedCommand}`,
+        detail: isGoalCommand ? submittedCommand : "Waiting for the provider command to finish.",
+        createdAt: event.payload.createdAt,
+      });
+
+      const sessionReady = yield* ensureSessionForThread(
+        event.payload.threadId,
+        event.payload.createdAt,
+        event.payload.modelSelection !== undefined
+          ? { modelSelection: event.payload.modelSelection }
+          : {},
+      ).pipe(
+        Effect.map(() => true),
+        Effect.catchCause((cause) => handleSlashCommandFailure(cause).pipe(Effect.as(false))),
+      );
+      if (!sessionReady) {
+        return;
+      }
+      if (event.payload.modelSelection !== undefined) {
+        threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
+      }
+
+      yield* providerService
+        .runSlashCommand({
+          threadId: event.payload.threadId,
+          command: {
+            name: event.payload.command,
+            ...(event.payload.arguments !== undefined
+              ? { arguments: event.payload.arguments }
+              : {}),
+          },
+        })
+        .pipe(
+          Effect.flatMap((result) => {
+            const goal = isGoalCommand ? readProviderGoalFromResultPayload(result.payload) : null;
+            const cleared = isGoalCommand ? isProviderGoalClearedResult(result.payload) : false;
+
+            if (isGoalCommand && goal) {
+              return appendProviderSlashCommandActivity({
+                threadId: event.payload.threadId,
+                activityId,
+                command: event.payload.command,
+                ...(event.payload.arguments !== undefined
+                  ? { arguments: event.payload.arguments }
+                  : {}),
+                kind: providerGoalActivityKind(goal.status),
+                tone: goal.status === "budgetLimited" ? "error" : "info",
+                summary: providerGoalSummary(goal.status),
+                detail: formatProviderGoalDetail(goal),
+                goal,
+                ...(result.payload !== undefined ? { payload: result.payload } : {}),
+                createdAt: event.payload.createdAt,
+              });
+            }
+
+            if (isGoalCommand && cleared) {
+              return appendProviderSlashCommandActivity({
+                threadId: event.payload.threadId,
+                activityId,
+                command: event.payload.command,
+                ...(event.payload.arguments !== undefined
+                  ? { arguments: event.payload.arguments }
+                  : {}),
+                kind: "provider.goal.cleared",
+                tone: "info",
+                summary: "Goal cleared",
+                ...(result.message !== undefined ? { detail: result.message } : {}),
+                ...(result.payload !== undefined ? { payload: result.payload } : {}),
+                createdAt: event.payload.createdAt,
+              });
+            }
+
+            if (isGoalCommand) {
+              return appendProviderSlashCommandActivity({
+                threadId: event.payload.threadId,
+                activityId,
+                command: event.payload.command,
+                ...(event.payload.arguments !== undefined
+                  ? { arguments: event.payload.arguments }
+                  : {}),
+                kind: "provider.goal.updated",
+                tone: "info",
+                summary: "Goal updated",
+                detail: result.message ?? submittedCommand,
+                ...(result.payload !== undefined ? { payload: result.payload } : {}),
+                createdAt: event.payload.createdAt,
+              });
+            }
+
+            return appendProviderSlashCommandActivity({
+              threadId: event.payload.threadId,
+              activityId,
+              command: event.payload.command,
+              ...(event.payload.arguments !== undefined
+                ? { arguments: event.payload.arguments }
+                : {}),
+              kind: "provider.slash-command.completed",
+              tone: "info",
+              summary: `Completed ${submittedCommand}`,
+              detail: result.message ?? `Provider command ${submittedCommand} completed`,
+              ...(result.payload !== undefined ? { payload: result.payload } : {}),
+              createdAt: event.payload.createdAt,
+            });
+          }),
+          Effect.catchCause(handleSlashCommandFailure),
+        );
+    },
+  );
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
@@ -1030,6 +1354,9 @@ const make = Effect.gen(function* () {
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
         return;
+      case "thread.provider-slash-command-requested":
+        yield* processProviderSlashCommandRequested(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -1065,6 +1392,7 @@ const make = Effect.gen(function* () {
       if (
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
+        event.type === "thread.provider-slash-command-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||

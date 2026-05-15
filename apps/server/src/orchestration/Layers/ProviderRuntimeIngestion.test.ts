@@ -100,6 +100,7 @@ function createProviderServiceHarness() {
   const service: ProviderServiceShape = {
     startSession: () => unsupported(),
     sendTurn: () => unsupported(),
+    runSlashCommand: () => unsupported(),
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
@@ -311,6 +312,7 @@ describe("ProviderRuntimeIngestion", () => {
 
     return {
       engine,
+      runtime,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       emit: provider.emit,
       setProviderSession: provider.setSession,
@@ -2714,6 +2716,168 @@ describe("ProviderRuntimeIngestion", () => {
       reasoningOutputTokens: 25,
       lastUsedTokens: 1075,
       compactsAutomatically: true,
+    });
+  });
+
+  it("projects Codex goal metadata only after an explicit goal command creates the status row", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("evt-goal-active-ignored"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: {
+        metadata: {
+          goal: {
+            threadId: "provider-thread-1",
+            objective: "improve benchmark coverage",
+            status: "active",
+            tokenBudget: 10_000,
+            tokensUsed: 1250,
+            timeUsedSeconds: 75,
+            createdAt: 0,
+            updatedAt: 75,
+          },
+        },
+      },
+    });
+    await harness.drain();
+
+    const threadBeforeExplicitGoal = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      threadBeforeExplicitGoal?.activities.some((activity: ProviderRuntimeTestActivity) =>
+        activity.kind.startsWith("provider.goal."),
+      ),
+    ).toBe(false);
+
+    await harness.runtime.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-provider-goal-updating"),
+        threadId: asThreadId("thread-1"),
+        activity: {
+          id: EventId.make("provider-goal:thread-1"),
+          tone: "info",
+          kind: "provider.goal.updating",
+          summary: "Updating goal",
+          payload: {
+            command: "goal",
+            arguments: "improve benchmark coverage",
+            submittedCommand: "/goal improve benchmark coverage",
+          },
+          turnId: null,
+          createdAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("evt-goal-active"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: {
+        metadata: {
+          goal: {
+            threadId: "provider-thread-1",
+            objective: "improve benchmark coverage",
+            status: "active",
+            tokenBudget: 10_000,
+            tokensUsed: 1250,
+            timeUsedSeconds: 75,
+            createdAt: 0,
+            updatedAt: 75,
+          },
+        },
+      },
+    });
+
+    const activeThread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "provider.goal.active",
+      ),
+    );
+
+    const activeActivity = activeThread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "provider.goal.active",
+    );
+    expect(activeActivity).toMatchObject({
+      id: "provider-goal:thread-1",
+      summary: "Goal active",
+      payload: {
+        detail: "Objective: improve benchmark coverage Time: 1m. Tokens: 1.3K/10K.",
+        goal: {
+          objective: "improve benchmark coverage",
+          status: "active",
+        },
+      },
+    });
+
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("evt-goal-cleared-ignored"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:04:00.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: {
+        metadata: {
+          goal: null,
+        },
+      },
+    });
+    await harness.drain();
+
+    const threadAfterClearedMetadata = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      threadAfterClearedMetadata?.activities.find(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "provider-goal:thread-1",
+      )?.kind,
+    ).toBe("provider.goal.active");
+
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("evt-goal-complete"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:05:00.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: {
+        metadata: {
+          goal: {
+            threadId: "provider-thread-1",
+            objective: "improve benchmark coverage",
+            status: "complete",
+            tokenBudget: 10_000,
+            tokensUsed: 2400,
+            timeUsedSeconds: 300,
+            createdAt: 0,
+            updatedAt: 300,
+          },
+        },
+      },
+    });
+
+    const completedThread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "provider.goal.completed",
+      ),
+    );
+
+    const goalActivities = completedThread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind.startsWith("provider.goal."),
+    );
+    expect(goalActivities).toHaveLength(1);
+    expect(goalActivities[0]).toMatchObject({
+      id: "provider-goal:thread-1",
+      kind: "provider.goal.completed",
+      summary: "Goal completed",
     });
   });
 

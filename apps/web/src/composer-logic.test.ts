@@ -7,6 +7,7 @@ import {
   expandCollapsedComposerCursor,
   isCollapsedCursorAdjacentToInlineToken,
   parseStandaloneComposerSlashCommand,
+  parseStandaloneProviderSlashCommand,
   replaceTextRange,
 } from "./composer-logic";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
@@ -346,5 +347,30 @@ describe("parseStandaloneComposerSlashCommand", () => {
 
   it("ignores slash commands with extra message text", () => {
     expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
+  });
+});
+
+describe("parseStandaloneProviderSlashCommand", () => {
+  const commands = [
+    {
+      name: "goal",
+    },
+  ];
+
+  it("parses provider commands with arguments", () => {
+    expect(parseStandaloneProviderSlashCommand("/goal improve coverage", commands)).toEqual({
+      command: "goal",
+      arguments: "improve coverage",
+    });
+  });
+
+  it("parses bare provider commands", () => {
+    expect(parseStandaloneProviderSlashCommand(" /goal ", commands)).toEqual({
+      command: "goal",
+    });
+  });
+
+  it("ignores commands the provider did not advertise", () => {
+    expect(parseStandaloneProviderSlashCommand("/review this", commands)).toBeNull();
   });
 });

@@ -1449,6 +1449,15 @@ export function makeOpenCodeAdapter(
         );
       });
 
+    const runSlashCommand: OpenCodeAdapterShape["runSlashCommand"] = (input) =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "provider/slash-command",
+          detail: `OpenCode does not support native slash command dispatch for '/${input.command.name}' yet.`,
+        }),
+      );
+
     return {
       provider: PROVIDER,
       capabilities: {
@@ -1456,6 +1465,7 @@ export function makeOpenCodeAdapter(
       },
       startSession,
       sendTurn,
+      runSlashCommand,
       interruptTurn,
       respondToRequest,
       respondToUserInput,

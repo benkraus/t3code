@@ -45,6 +45,7 @@ import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch"
 import {
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
+  parseStandaloneProviderSlashCommand,
 } from "../composer-logic";
 import {
   derivePendingApprovals,
@@ -1824,7 +1825,10 @@ function ChatViewContent(props: ChatViewProps) {
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
-  const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
+  const workLogEntries = useMemo(
+    () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
+    [activeLatestTurn?.turnId, threadActivities],
+  );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -3680,6 +3684,47 @@ function ChatViewContent(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
+      return;
+    }
+    const slashProviderStatus =
+      providerStatuses.find(
+        (status) => status.instanceId === ctxSelectedModelSelection.instanceId,
+      ) ?? activeProviderStatus;
+    const standaloneProviderSlashCommand =
+      composerImages.length === 0 && sendableComposerTerminalContexts.length === 0
+        ? parseStandaloneProviderSlashCommand(trimmed, slashProviderStatus?.slashCommands ?? [])
+        : null;
+    if (standaloneProviderSlashCommand) {
+      if (!isServerThread) {
+        setThreadError(activeThread.id, "Start a thread before running provider slash commands.");
+        return;
+      }
+      sendInFlightRef.current = true;
+      setThreadError(activeThread.id, null);
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "thread.provider-slash-command.run",
+          commandId: newCommandId(),
+          threadId: activeThread.id,
+          command: standaloneProviderSlashCommand.command,
+          ...(standaloneProviderSlashCommand.arguments !== undefined
+            ? { arguments: standaloneProviderSlashCommand.arguments }
+            : {}),
+          modelSelection: ctxSelectedModelSelection,
+          runtimeMode,
+          createdAt: new Date().toISOString(),
+        });
+        promptRef.current = "";
+        clearComposerDraftContent(composerDraftTarget);
+        composerRef.current?.resetCursorState();
+      } catch (err) {
+        setThreadError(
+          activeThread.id,
+          err instanceof Error ? err.message : "Failed to run provider slash command.",
+        );
+      } finally {
+        sendInFlightRef.current = false;
+      }
       return;
     }
     if (!hasSendableContent) {

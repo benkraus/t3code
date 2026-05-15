@@ -4,6 +4,15 @@ import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 export type ComposerTriggerKind = "path" | "slash-command" | "skill";
 export type ComposerSlashCommand = "model" | "plan" | "default";
 
+export interface ComposerProviderSlashCommandDefinition {
+  readonly name: string;
+}
+
+export interface ParsedProviderSlashCommand {
+  readonly command: string;
+  readonly arguments?: string;
+}
+
 export interface ComposerTrigger {
   kind: ComposerTriggerKind;
   query: string;
@@ -265,6 +274,30 @@ export function parseStandaloneComposerSlashCommand(
   const command = match[1]?.toLowerCase();
   if (command === "plan") return "plan";
   return "default";
+}
+
+export function parseStandaloneProviderSlashCommand(
+  text: string,
+  commands: ReadonlyArray<ComposerProviderSlashCommandDefinition>,
+): ParsedProviderSlashCommand | null {
+  const trimmed = text.trim();
+  const match = /^\/([^\s/]+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+  if (!match) {
+    return null;
+  }
+  const requestedCommand = match[1]?.trim().toLowerCase();
+  if (!requestedCommand) {
+    return null;
+  }
+  const command = commands.find((entry) => entry.name.trim().toLowerCase() === requestedCommand);
+  if (!command) {
+    return null;
+  }
+  const args = match[2]?.trim();
+  return {
+    command: command.name,
+    ...(args && args.length > 0 ? { arguments: args } : {}),
+  };
 }
 
 export function replaceTextRange(
