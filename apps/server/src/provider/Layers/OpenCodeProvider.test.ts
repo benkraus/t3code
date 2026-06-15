@@ -7,7 +7,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { beforeEach } from "vite-plus/test";
 
-import { OpenCodeSettings } from "@t3tools/contracts";
+import { OpenCodeSettings, ProviderDriverKind } from "@t3tools/contracts";
 import { ServerConfig } from "../../config.ts";
 import {
   OpenCodeRuntime,
@@ -192,6 +192,121 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
         "build",
       );
     }),
+  );
+
+  it.effect("filters inventory to a requested upstream provider", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.inventory = {
+        providerList: {
+          connected: ["openai", "zai-coding-plan"],
+          all: [
+            {
+              id: "openai",
+              name: "OpenAI",
+              models: {
+                "gpt-5": {
+                  id: "gpt-5",
+                  name: "GPT-5",
+                  variants: {},
+                },
+              },
+            },
+            {
+              id: "zai-coding-plan",
+              name: "Z.AI Coding Plan",
+              models: {
+                "glm-5.2": {
+                  id: "glm-5.2",
+                  name: "GLM-5.2",
+                  variants: {},
+                },
+              },
+            },
+          ],
+          default: {},
+        },
+        agents: [{ name: "build", hidden: false, mode: "primary" }],
+      };
+
+      const snapshot = yield* checkOpenCodeProviderStatus(
+        makeOpenCodeSettings(),
+        process.cwd(),
+        process.env,
+        {
+          driverKind: ProviderDriverKind.make("zaiCodingPlan"),
+          presentation: { displayName: "Z.AI Coding Plan", showInteractionModeToggle: false },
+          modelProviderIds: new Set(["zai-coding-plan"]),
+        },
+      );
+
+      assert.equal(snapshot.status, "ready");
+      assert.equal(snapshot.auth.status, "authenticated");
+      assert.equal(snapshot.displayName, "Z.AI Coding Plan");
+      assert.deepEqual(
+        snapshot.models.map((model) => model.slug),
+        ["zai-coding-plan/glm-5.2"],
+      );
+      assert.equal(snapshot.message, "Z.AI Coding Plan connected through OpenCode.");
+    }),
+  );
+
+  it.effect(
+    "keeps a restricted provider in warning state when only other upstreams are connected",
+    () =>
+      Effect.gen(function* () {
+        runtimeMock.state.inventory = {
+          providerList: {
+            connected: ["openai"],
+            all: [
+              {
+                id: "openai",
+                name: "OpenAI",
+                models: {
+                  "gpt-5": {
+                    id: "gpt-5",
+                    name: "GPT-5",
+                    variants: {},
+                  },
+                },
+              },
+              {
+                id: "zai-coding-plan",
+                name: "Z.AI Coding Plan",
+                models: {
+                  "glm-5.2": {
+                    id: "glm-5.2",
+                    name: "GLM-5.2",
+                    variants: {},
+                  },
+                },
+              },
+            ],
+            default: {},
+          },
+          agents: [],
+        };
+
+        const snapshot = yield* checkOpenCodeProviderStatus(
+          makeOpenCodeSettings(),
+          process.cwd(),
+          process.env,
+          {
+            driverKind: ProviderDriverKind.make("zaiCodingPlan"),
+            presentation: { displayName: "Z.AI Coding Plan", showInteractionModeToggle: false },
+            modelProviderIds: new Set(["zai-coding-plan"]),
+            missingConnectionMessage:
+              "Set ZHIPU_API_KEY in this provider's environment to connect Z.AI Coding Plan through OpenCode.",
+          },
+        );
+
+        assert.equal(snapshot.status, "warning");
+        assert.equal(snapshot.auth.status, "unknown");
+        assert.deepEqual(snapshot.models, []);
+        assert.equal(
+          snapshot.message,
+          "Set ZHIPU_API_KEY in this provider's environment to connect Z.AI Coding Plan through OpenCode.",
+        );
+      }),
   );
 
   it.effect("closes the local OpenCode server scope after provider refresh", () =>

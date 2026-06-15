@@ -563,6 +563,75 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }).pipe(Effect.provide(adapterLayer));
   });
 
+  it.effect(
+    "can expose a provider-specific OpenCode adapter with restricted upstream models",
+    () => {
+      const driverKind = ProviderDriverKind.make("zaiCodingPlan");
+      const instanceId = ProviderInstanceId.make("zaiCodingPlan");
+      const adapterLayer = Layer.effect(
+        OpenCodeAdapter,
+        makeOpenCodeAdapter(openCodeAdapterTestSettings, {
+          providerKind: driverKind,
+          providerLabel: "Z.AI Coding Plan",
+          instanceId,
+          modelProviderIds: new Set(["zai-coding-plan"]),
+        }),
+      ).pipe(
+        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+        Layer.provideMerge(ServerSettingsService.layerTest()),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      return Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-zai-coding-plan");
+        const session = yield* adapter.startSession({
+          provider: driverKind,
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        assert.equal(session.provider, "zaiCodingPlan");
+        assert.equal(adapter.provider, "zaiCodingPlan");
+
+        const invalidError = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "Use GLM",
+            modelSelection: createModelSelection(instanceId, "openai/gpt-5"),
+          })
+          .pipe(Effect.flip);
+
+        assert.equal(invalidError._tag, "ProviderAdapterValidationError");
+        if (invalidError._tag !== "ProviderAdapterValidationError") {
+          throw new Error("Unexpected error type");
+        }
+        assert.equal(
+          invalidError.issue,
+          "Z.AI Coding Plan model selection must use one of: zai-coding-plan.",
+        );
+        assert.deepEqual(runtimeMock.state.promptCalls, []);
+
+        yield* adapter.sendTurn({
+          threadId,
+          input: "Use GLM",
+          modelSelection: createModelSelection(instanceId, "zai-coding-plan/glm-5.2"),
+        });
+
+        assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
+          sessionID: "http://127.0.0.1:9999/session",
+          model: {
+            providerID: "zai-coding-plan",
+            modelID: "glm-5.2",
+          },
+          parts: [{ type: "text", text: "Use GLM" }],
+        });
+      }).pipe(Effect.provide(adapterLayer));
+    },
+  );
+
   it.effect("rejects sendTurn model selections for another instance id", () => {
     const instanceId = ProviderInstanceId.make("opencode_zen");
     const adapterLayer = Layer.effect(

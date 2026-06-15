@@ -19,6 +19,8 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     // Legacy `providers` struct is still hydrated with its per-driver defaults
     // so existing call sites keep working through the migration.
     expect(decoded.providers.codex.enabled).toBe(true);
+    expect(decoded.providers.zaiCodingPlan.enabled).toBe(false);
+    expect(decoded.providers.zaiCodingPlan.binaryPath).toBe("opencode");
   });
 
   it("decodes a multi-instance map mixing first-party and fork drivers", () => {
@@ -107,6 +109,9 @@ describe("ServerSettingsPatch string normalization", () => {
           binaryPath: "  /opt/homebrew/bin/codex  ",
           homePath: "  ~/.codex  ",
         },
+        zaiCodingPlan: {
+          binaryPath: "  /opt/homebrew/bin/opencode  ",
+        },
       },
       providerInstances: {
         codex_personal: {
@@ -122,6 +127,7 @@ describe("ServerSettingsPatch string normalization", () => {
     expect(patch.observability?.otlpTracesUrl).toBe("http://localhost:4318/v1/traces");
     expect(patch.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
     expect(patch.providers?.codex?.homePath).toBe("~/.codex");
+    expect(patch.providers?.zaiCodingPlan?.binaryPath).toBe("/opt/homebrew/bin/opencode");
     expect(patch.providerInstances?.[ProviderInstanceId.make("codex_personal")]?.driver).toBe(
       "codex",
     );
@@ -144,10 +150,15 @@ describe("ServerSettingsPatch string normalization", () => {
           ...defaultSettings.providers.codex,
           binaryPath: "  /opt/homebrew/bin/codex  ",
         },
+        zaiCodingPlan: {
+          ...defaultSettings.providers.zaiCodingPlan,
+          binaryPath: "  /opt/homebrew/bin/opencode  ",
+        },
       },
     });
 
     expect(encoded.addProjectBaseDirectory).toBe("~/Development");
     expect(encoded.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
+    expect(encoded.providers?.zaiCodingPlan?.binaryPath).toBe("/opt/homebrew/bin/opencode");
   });
 });

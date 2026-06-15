@@ -36,6 +36,21 @@ describe("ProviderSettingsForm helpers", () => {
     });
   });
 
+  it("derives Z.AI Coding Plan binary settings and credential metadata", () => {
+    const zai = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("zaiCodingPlan")];
+    expect(zai).toBeDefined();
+
+    expect(deriveProviderSettingsFields(zai!).map((field) => field.key)).toEqual(["binaryPath"]);
+    expect(zai!.credentialEnvironmentVariables).toEqual([
+      {
+        name: "ZHIPU_API_KEY",
+        label: "Z.AI API key",
+        placeholder: "ZHIPU_API_KEY",
+        description: "Stored as a sensitive provider environment variable.",
+      },
+    ]);
+  });
+
   it("preserves unknown config keys while omitting empty configurable fields", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();

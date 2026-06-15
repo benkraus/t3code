@@ -42,6 +42,10 @@ import { ProviderSettingsForm } from "./ProviderSettingsForm";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
+import {
+  credentialEnvironmentVariableNames,
+  ProviderCredentialEnvironmentFields,
+} from "./ProviderCredentialEnvironmentFields";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
   getProviderVersionAdvisoryPresentation,
@@ -505,6 +509,20 @@ export function ProviderInstanceCard({
     );
   };
 
+  const credentialNames = credentialEnvironmentVariableNames(
+    driverOption?.credentialEnvironmentVariables,
+  );
+  const environment = instance.environment ?? [];
+  const genericEnvironment = environment.filter((variable) => !credentialNames.has(variable.name));
+  const updateGenericEnvironment = (
+    nextGenericEnvironment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+  ) => {
+    const credentialEnvironment = environment.filter((variable) =>
+      credentialNames.has(variable.name),
+    );
+    updateEnvironment([...credentialEnvironment, ...nextGenericEnvironment]);
+  };
+
   const titleIconNode = driverKind ? (
     <ProviderInstanceIcon
       driverKind={driverKind}
@@ -761,10 +779,18 @@ export function ProviderInstanceCard({
               />
             </div>
 
+            <ProviderCredentialEnvironmentFields
+              credentials={driverOption?.credentialEnvironmentVariables}
+              environment={environment}
+              idPrefix={`provider-instance-${instanceId}-credential`}
+              variant="card"
+              onChange={updateEnvironment}
+            />
+
             <div className="border-t border-border/60 px-4 py-3 sm:px-5">
               <ProviderEnvironmentSection
-                environment={instance.environment ?? []}
-                onChange={updateEnvironment}
+                environment={genericEnvironment}
+                onChange={updateGenericEnvironment}
               />
             </div>
 

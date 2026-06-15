@@ -40,6 +40,11 @@ import {
 
 const OPENCODE_TEXT_GENERATION_IDLE_TTL = "30 seconds";
 
+export interface OpenCodeTextGenerationOptions {
+  readonly modelProviderIds?: ReadonlySet<string>;
+  readonly providerLabel?: string;
+}
+
 function getOpenCodePromptErrorMessage(error: unknown): string | null {
   if (!error || typeof error !== "object") {
     return null;
@@ -99,11 +104,15 @@ interface SharedOpenCodeTextGenerationServerState {
 
 export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration")(function* (
   openCodeSettings: OpenCodeSettings,
-  environment?: NodeJS.ProcessEnv,
+  environment: NodeJS.ProcessEnv = process.env,
+  options?: OpenCodeTextGenerationOptions,
 ) {
   const serverConfig = yield* ServerConfig;
   const openCodeRuntime = yield* OpenCodeRuntime;
-  const resolvedEnvironment = environment ?? process.env;
+  const resolvedEnvironment = environment;
+  const providerLabel = options?.providerLabel ?? "OpenCode";
+  const modelProviderIds = options?.modelProviderIds;
+  const modelProviderList = modelProviderIds ? [...modelProviderIds].toSorted().join(", ") : "";
   const idleFiberScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
     Scope.close(scope, Exit.void),
   );
@@ -282,7 +291,13 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     if (!parsedModel) {
       return yield* new TextGenerationError({
         operation: input.operation,
-        detail: "OpenCode model selection must use the 'provider/model' format.",
+        detail: `${providerLabel} model selection must use the 'provider/model' format.`,
+      });
+    }
+    if (modelProviderIds !== undefined && !modelProviderIds.has(parsedModel.providerID)) {
+      return yield* new TextGenerationError({
+        operation: input.operation,
+        detail: `${providerLabel} model selection must use one of: ${modelProviderList}.`,
       });
     }
 

@@ -353,6 +353,9 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             serverUrl: "  http://127.0.0.1:4096  ",
             serverPassword: "  secret-password  ",
           },
+          zaiCodingPlan: {
+            binaryPath: "  /opt/homebrew/bin/opencode-zai  ",
+          },
         },
       });
 
@@ -375,6 +378,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         binaryPath: "/opt/homebrew/bin/opencode",
         serverUrl: "http://127.0.0.1:4096",
         serverPassword: "secret-password",
+        customModels: [],
+      });
+      assert.deepEqual(next.providers.zaiCodingPlan, {
+        enabled: false,
+        binaryPath: "/opt/homebrew/bin/opencode-zai",
         customModels: [],
       });
     }).pipe(Effect.provide(makeServerSettingsLayer())),

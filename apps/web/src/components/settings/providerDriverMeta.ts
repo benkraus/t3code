@@ -5,6 +5,7 @@ import {
   GrokSettings,
   OpenCodeSettings,
   ProviderDriverKind,
+  ZaiCodingPlanSettings,
 } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
 import { ClaudeAI, CursorIcon, GrokIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
@@ -24,6 +25,7 @@ export interface ProviderClientDefinition {
   readonly label: string;
   readonly icon: Icon;
   readonly settingsSchema: ProviderSettingsSchema;
+  readonly credentialEnvironmentVariables?: readonly ProviderCredentialEnvironmentVariableDefinition[];
   /**
    * Optional short label rendered as a `variant="warning"` badge next to
    * the instance title. Used to flag drivers that still ship under an
@@ -32,6 +34,13 @@ export interface ProviderClientDefinition {
    * built-in default or custom — advertises the same marker.
    */
   readonly badgeLabel?: string;
+}
+
+export interface ProviderCredentialEnvironmentVariableDefinition {
+  readonly name: string;
+  readonly label: string;
+  readonly description?: string;
+  readonly placeholder?: string;
 }
 
 export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
@@ -66,6 +75,20 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "OpenCode",
     icon: OpenCodeIcon,
     settingsSchema: OpenCodeSettings,
+  },
+  {
+    value: ProviderDriverKind.make("zaiCodingPlan"),
+    label: "Z.AI Coding Plan",
+    icon: OpenCodeIcon,
+    settingsSchema: ZaiCodingPlanSettings,
+    credentialEnvironmentVariables: [
+      {
+        name: "ZHIPU_API_KEY",
+        label: "Z.AI API key",
+        placeholder: "ZHIPU_API_KEY",
+        description: "Stored as a sensitive provider environment variable.",
+      },
+    ],
   },
 ];
 

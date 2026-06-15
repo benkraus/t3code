@@ -76,6 +76,9 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("gpt-5-codex")).toBe("gpt-5.4");
     expect(normalizeModelSlug("5.3")).toBe("gpt-5.3-codex");
     expect(normalizeModelSlug("sonnet", claude)).toBe("claude-sonnet-4-6");
+    expect(normalizeModelSlug("glm-5.2", ProviderDriverKind.make("zaiCodingPlan"))).toBe(
+      "zai-coding-plan/glm-5.2",
+    );
   });
 
   it("returns null for empty or missing values", () => {
@@ -96,6 +99,9 @@ describe("resolveModelSlugForProvider", () => {
     );
     expect(resolveModelSlugForProvider(ProviderDriverKind.make("grok"), undefined)).toBe(
       "grok-build",
+    );
+    expect(resolveModelSlugForProvider(ProviderDriverKind.make("zaiCodingPlan"), undefined)).toBe(
+      "zai-coding-plan/glm-5.2",
     );
   });
 

@@ -132,6 +132,7 @@ const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
+const ZAI_CODING_PLAN_DRIVER_KIND = ProviderDriverKind.make("zaiCodingPlan");
 
 export const DEFAULT_MODEL = "gpt-5.4";
 export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
@@ -142,6 +143,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [CURSOR_DRIVER_KIND]: "auto",
   [GROK_DRIVER_KIND]: "grok-build",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
+  [ZAI_CODING_PLAN_DRIVER_KIND]: "zai-coding-plan/glm-5.2",
 };
 
 /** Per-provider text generation model defaults. */
@@ -152,6 +154,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   [CLAUDE_DRIVER_KIND]: "claude-haiku-4-5",
   [CURSOR_DRIVER_KIND]: "composer-2",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
+  [ZAI_CODING_PLAN_DRIVER_KIND]: "zai-coding-plan/glm-5.2",
 };
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
@@ -195,6 +198,17 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "opus-4.5": "claude-opus-4-5",
   },
   [OPENCODE_DRIVER_KIND]: {},
+  [ZAI_CODING_PLAN_DRIVER_KIND]: {
+    "glm-5.2": "zai-coding-plan/glm-5.2",
+    "5.2": "zai-coding-plan/glm-5.2",
+    "glm-5.1": "zai-coding-plan/glm-5.1",
+    "5.1": "zai-coding-plan/glm-5.1",
+    "glm-5-turbo": "zai-coding-plan/glm-5-turbo",
+    "glm-4.7": "zai-coding-plan/glm-4.7",
+    "4.7": "zai-coding-plan/glm-4.7",
+    "glm-4.5-air": "zai-coding-plan/glm-4.5-air",
+    "4.5-air": "zai-coding-plan/glm-4.5-air",
+  },
 };
 
 // ── Provider display names ────────────────────────────────────────────
@@ -205,4 +219,5 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [CURSOR_DRIVER_KIND]: "Cursor",
   [GROK_DRIVER_KIND]: "Grok",
   [OPENCODE_DRIVER_KIND]: "OpenCode",
+  [ZAI_CODING_PLAN_DRIVER_KIND]: "Z.AI Coding Plan",
 };

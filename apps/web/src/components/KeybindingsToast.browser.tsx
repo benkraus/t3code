@@ -167,6 +167,11 @@ function createBaseServerConfig(): ServerConfig {
           serverPassword: "",
           customModels: [],
         },
+        zaiCodingPlan: {
+          enabled: false,
+          binaryPath: "",
+          customModels: [],
+        },
       },
     },
   };

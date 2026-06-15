@@ -16,7 +16,10 @@ import {
   type OpenCodeRuntimeShape,
 } from "../provider/opencodeRuntime.ts";
 import { type TextGenerationShape } from "./TextGeneration.ts";
-import { makeOpenCodeTextGeneration } from "./OpenCodeTextGeneration.ts";
+import {
+  makeOpenCodeTextGeneration,
+  type OpenCodeTextGenerationOptions,
+} from "./OpenCodeTextGeneration.ts";
 
 const runtimeMock = {
   state: {
@@ -144,9 +147,10 @@ const EXISTING_SERVER_OPENCODE_SETTINGS = Schema.decodeSync(OpenCodeSettings)({
 function withOpenCodeTextGeneration<A, E, R>(
   settings: OpenCodeSettings,
   effectFn: (textGeneration: TextGenerationShape) => Effect.Effect<A, E, R>,
+  options?: OpenCodeTextGenerationOptions,
 ) {
   return Effect.gen(function* () {
-    const textGeneration = yield* makeOpenCodeTextGeneration(settings);
+    const textGeneration = yield* makeOpenCodeTextGeneration(settings, process.env, options);
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }
@@ -162,6 +166,38 @@ const advanceIdleClock = Effect.gen(function* () {
 });
 
 it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
+  it.effect("rejects model selections outside a restricted upstream provider set", () =>
+    withOpenCodeTextGeneration(
+      DEFAULT_OPENCODE_SETTINGS,
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const error = yield* textGeneration
+            .generateCommitMessage({
+              cwd: process.cwd(),
+              branch: "feature/zai",
+              stagedSummary: "M README.md",
+              stagedPatch: "diff --git a/README.md b/README.md",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("zaiCodingPlan"),
+                model: "openai/gpt-5",
+              },
+            })
+            .pipe(Effect.flip);
+
+          expect(error._tag).toBe("TextGenerationError");
+          expect(error.detail).toBe(
+            "Z.AI Coding Plan model selection must use one of: zai-coding-plan.",
+          );
+          expect(runtimeMock.state.startCalls).toEqual([]);
+          expect(runtimeMock.state.promptUrls).toEqual([]);
+        }),
+      {
+        providerLabel: "Z.AI Coding Plan",
+        modelProviderIds: new Set(["zai-coding-plan"]),
+      },
+    ),
+  );
+
   it.effect("reuses a warm server across back-to-back requests and closes it after idling", () =>
     withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
       Effect.gen(function* () {

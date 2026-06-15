@@ -7,6 +7,7 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
   type ProviderInstanceConfig,
+  type ProviderInstanceEnvironmentVariable,
 } from "@t3tools/contracts";
 
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
@@ -29,6 +30,7 @@ import { toastManager } from "../ui/toast";
 import { DRIVER_OPTION_BY_VALUE, DRIVER_OPTIONS } from "./providerDriverMeta";
 import { ProviderSettingsForm, deriveProviderSettingsFields } from "./ProviderSettingsForm";
 import { AnimatedHeight } from "../AnimatedHeight";
+import { ProviderCredentialEnvironmentFields } from "./ProviderCredentialEnvironmentFields";
 
 const PROVIDER_ACCENT_SWATCHES = [
   "#2563eb",
@@ -126,6 +128,9 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
   // Driver-specific config drafts keyed by driver so toggling between drivers
   // during the same dialog session does not lose in-progress input.
   const [configByDriver, setConfigByDriver] = useState<Record<string, Record<string, unknown>>>({});
+  const [environmentByDriver, setEnvironmentByDriver] = useState<
+    Record<string, ReadonlyArray<ProviderInstanceEnvironmentVariable>>
+  >({});
   // Errors are suppressed until the user has tried to submit once. After that
   // they update live so fixing the problem clears the message in place.
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
@@ -146,6 +151,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     setWizardStep(0);
     setInstanceIdDirty(false);
     setConfigByDriver({});
+    setEnvironmentByDriver({});
     setHasAttemptedSubmit(false);
   }, [open]);
 
@@ -168,6 +174,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
   const wizardStepSummaries = [driverOption.label, previewLabel, null] as const;
 
   const configDraft = configByDriver[driver] ?? EMPTY_CONFIG_DRAFT;
+  const environmentDraft = environmentByDriver[driver] ?? [];
   const setConfigDraft = useCallback(
     (config: Record<string, unknown> | undefined) => {
       setConfigByDriver((existing) => {
@@ -182,6 +189,21 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     },
     [driver],
   );
+  const setEnvironmentDraft = useCallback(
+    (environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>) => {
+      setEnvironmentByDriver((existing) => {
+        const next = { ...existing };
+        const cleaned = environment.filter((variable) => variable.name.trim().length > 0);
+        if (cleaned.length === 0) {
+          delete next[driver];
+        } else {
+          next[driver] = cleaned;
+        }
+        return next;
+      });
+    },
+    [driver],
+  );
 
   const handleSave = useCallback(() => {
     setHasAttemptedSubmit(true);
@@ -189,6 +211,8 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
 
     const config = configByDriver[driver] ?? {};
     const hasConfig = Object.keys(config).length > 0;
+    const environment = environmentByDriver[driver] ?? [];
+    const hasEnvironment = environment.length > 0;
     const normalizedAccentColor = normalizeProviderAccentColor(accentColor);
 
     const nextInstance: ProviderInstanceConfig = {
@@ -197,6 +221,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
       ...(label.trim().length > 0 ? { displayName: label.trim() } : {}),
       ...(normalizedAccentColor ? { accentColor: normalizedAccentColor } : {}),
       ...(hasConfig ? { config } : {}),
+      ...(hasEnvironment ? { environment } : {}),
     };
     // `ProviderInstanceId.make` revalidates the slug; we've already checked
     // it via `validateInstanceId`, but going through the brand constructor
@@ -226,6 +251,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     driver,
     driverOption,
     configByDriver,
+    environmentByDriver,
     instanceId,
     instanceIdError,
     label,
@@ -440,8 +466,16 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                 </span>
               </div>
 
-              {driverSettingsFields.length > 0 ? (
+              {driverSettingsFields.length > 0 ||
+              (driverOption.credentialEnvironmentVariables?.length ?? 0) > 0 ? (
                 <div className={cn("grid gap-4", wizardStep !== 2 && "hidden")}>
+                  <ProviderCredentialEnvironmentFields
+                    credentials={driverOption.credentialEnvironmentVariables}
+                    environment={environmentDraft}
+                    idPrefix={`add-provider-${driver}-credential`}
+                    variant="dialog"
+                    onChange={setEnvironmentDraft}
+                  />
                   <ProviderSettingsForm
                     definition={driverOption}
                     value={configDraft}
