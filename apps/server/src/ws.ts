@@ -107,6 +107,7 @@ import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import { readRemoteAddressFromRequest } from "./auth/utils.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
@@ -1640,6 +1641,17 @@ export const websocketRpcRouteLayer = Layer.unwrap(
             ServerAuthInternalError: (error) => failEnvironmentInternal("internal_error", error),
           }),
         );
+        const remoteAddress = readRemoteAddressFromRequest(request) ?? "unknown";
+        const userAgentHeader = request.headers["user-agent"];
+        const userAgent = typeof userAgentHeader === "string" ? userAgentHeader : "unknown";
+        const connectedAt = yield* DateTime.now;
+        yield* Effect.logInfo("websocket connected", {
+          sessionId: session.sessionId,
+          subject: session.subject,
+          method: session.method,
+          remoteAddress,
+          userAgent,
+        });
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           disableTracing: true,
         }).pipe(
@@ -1675,7 +1687,18 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
           () => rpcWebSocketHttpEffect,
-          () => sessions.markDisconnected(session.sessionId),
+          () =>
+            Effect.gen(function* () {
+              yield* sessions.markDisconnected(session.sessionId);
+              const disconnectedAt = yield* DateTime.now;
+              yield* Effect.logInfo("websocket disconnected", {
+                sessionId: session.sessionId,
+                subject: session.subject,
+                method: session.method,
+                remoteAddress,
+                durationMs: disconnectedAt.epochMilliseconds - connectedAt.epochMilliseconds,
+              });
+            }),
         );
       }).pipe(
         Effect.catchTags({

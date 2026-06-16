@@ -45,6 +45,10 @@ import { browserApiCorsAllowedHeaders, browserApiCorsAllowedMethods } from "./ht
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const SERVER_DISCOVERY_ROUTE = "/api/server-discovery";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
+const HTML_NO_CACHE_HEADERS = {
+  "Cache-Control": "no-store",
+  Pragma: "no-cache",
+} as const;
 
 export const browserApiCorsLayer = Layer.unwrap(
   Effect.gen(function* () {
@@ -299,6 +303,7 @@ export const staticAndDevRouteLayer = HttpRouter.add(
       return HttpServerResponse.uint8Array(indexData, {
         status: 200,
         contentType: "text/html; charset=utf-8",
+        headers: HTML_NO_CACHE_HEADERS,
       });
     }
 
@@ -311,6 +316,7 @@ export const staticAndDevRouteLayer = HttpRouter.add(
     return HttpServerResponse.uint8Array(data, {
       status: 200,
       contentType,
+      ...(contentType.startsWith("text/html") ? { headers: HTML_NO_CACHE_HEADERS } : {}),
     });
   }),
 );
