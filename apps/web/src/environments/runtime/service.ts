@@ -47,7 +47,7 @@ import {
 import { ensureLocalApi } from "~/localApi";
 import { collectActiveTerminalUiThreadKeys } from "~/lib/terminalUiStateCleanup";
 import { deriveOrchestrationBatchEffects } from "~/orchestrationEventEffects";
-import { getPrimaryKnownEnvironment } from "../primary";
+import { getPrimaryKnownEnvironment, issuePrimaryWebSocketTicket } from "../primary";
 import { webRuntime } from "../../lib/runtime";
 import { connectManagedCloudEnvironment } from "../../cloud/linkEnvironment";
 import { readManagedRelayClerkToken } from "../../cloud/managedAuth";
@@ -1154,6 +1154,16 @@ function createWsRpcClient(transport: WsTransport): WsRpcClient {
   });
 }
 
+async function resolvePrimaryWebSocketConnectionUrl(wsBaseUrl: string): Promise<string> {
+  const issued = await issuePrimaryWebSocketTicket();
+  const url = new URL(wsBaseUrl);
+  if (url.pathname === "" || url.pathname === "/") {
+    url.pathname = "/ws";
+  }
+  url.searchParams.set("wsTicket", issued.ticket);
+  return url.toString();
+}
+
 function createPrimaryEnvironmentClient(
   knownEnvironment: ReturnType<typeof getPrimaryKnownEnvironment>,
 ) {
@@ -1166,7 +1176,7 @@ function createPrimaryEnvironmentClient(
   const connectionLabel = knownEnvironment?.label ?? null;
 
   return createWsRpcClient(
-    new WsTransport(wsBaseUrl, {
+    new WsTransport(() => resolvePrimaryWebSocketConnectionUrl(wsBaseUrl), {
       getConnectionLabel: () => connectionLabel,
       getVersionMismatchHint: () =>
         resolveServerConfigVersionMismatch(getServerConfig())?.hint ?? null,

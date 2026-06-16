@@ -13,12 +13,19 @@ const mockSavedEnvironmentRegistrySubscribe = vi.fn();
 const mockReadSavedEnvironmentBearerToken = vi.fn();
 const mockReadSavedEnvironmentCredential = vi.fn();
 const mockGetSavedEnvironmentRecord = vi.fn();
+const mockIssuePrimaryWebSocketTicket = vi.fn(async () => ({
+  ticket: "primary-ws-ticket",
+  expiresAt: new Date("2026-06-16T12:00:00.000Z"),
+}));
+const mockWsTransportConnectors: Array<string | (() => Promise<string>)> = [];
 
-function MockWsTransport() {
+function MockWsTransport(connect: string | (() => Promise<string>)) {
+  mockWsTransportConnectors.push(connect);
   return undefined;
 }
 
 vi.mock("../primary", () => ({
+  issuePrimaryWebSocketTicket: mockIssuePrimaryWebSocketTicket,
   getPrimaryKnownEnvironment: vi.fn(() => ({
     id: "env-1",
     label: "Primary environment",
@@ -32,6 +39,7 @@ vi.mock("../primary", () => ({
 }));
 
 vi.mock("../../lib/runtime", () => ({
+  runPrimaryHttp: vi.fn(),
   webRuntime: {
     runPromise: mockRemoteHttpRunPromise,
   },
@@ -237,6 +245,11 @@ describe("saved environment startup", () => {
     mockSavedEnvironmentRegistrySubscribe.mockReturnValue(() => undefined);
     mockWaitForSavedEnvironmentRegistryHydration.mockResolvedValue(undefined);
     mockReadSavedEnvironmentBearerToken.mockResolvedValue("saved-bearer-token");
+    mockIssuePrimaryWebSocketTicket.mockResolvedValue({
+      ticket: "primary-ws-ticket",
+      expiresAt: new Date("2026-06-16T12:00:00.000Z"),
+    });
+    mockWsTransportConnectors.length = 0;
     mockReadSavedEnvironmentCredential.mockImplementation(async () => {
       const token = await mockReadSavedEnvironmentBearerToken();
       return token ? { version: 1, method: "bearer", token } : null;
@@ -282,6 +295,24 @@ describe("saved environment startup", () => {
     const savedClient = savedConnectionCall?.[0]?.client;
     expect(savedClient.server.getConfig).not.toHaveBeenCalled();
     expect(mockFetchRemoteSessionState).toHaveBeenCalledTimes(1);
+
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("uses a websocket ticket for the primary environment connection URL", async () => {
+    const { startEnvironmentConnectionService, resetEnvironmentServiceForTests } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    await vi.runAllTimersAsync();
+
+    const connector = mockWsTransportConnectors[0];
+    expect(typeof connector).toBe("function");
+    await expect((connector as () => Promise<string>)()).resolves.toBe(
+      "ws://127.0.0.1:3000/ws?wsTicket=primary-ws-ticket",
+    );
+    expect(mockIssuePrimaryWebSocketTicket).toHaveBeenCalledTimes(1);
 
     stop();
     await resetEnvironmentServiceForTests();

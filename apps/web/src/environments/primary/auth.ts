@@ -6,6 +6,7 @@ import type {
   ServerAuthSessionMethod,
   AuthSessionId,
   AuthSessionState,
+  AuthWebSocketTicketResult,
 } from "@t3tools/contracts";
 import { EnvironmentHttpCommonError } from "@t3tools/contracts";
 import type { EnvironmentHttpCommonError as EnvironmentHttpCommonErrorType } from "@t3tools/contracts";
@@ -322,6 +323,24 @@ export async function submitServerAuthCredential(credential: string): Promise<vo
   await exchangeBootstrapCredential(trimmedCredential);
   bootstrapPromise = null;
   stripPairingTokenFromUrl();
+}
+
+export async function issuePrimaryWebSocketTicket(): Promise<AuthWebSocketTicketResult> {
+  try {
+    return await runPrimaryHttp(
+      PrimaryEnvironmentHttpClient.pipe(
+        Effect.flatMap((client) => client.auth.webSocketTicket({ headers: {} })),
+      ),
+    );
+  } catch (error) {
+    throw new Error(
+      readHttpApiErrorMessage(
+        error,
+        `Failed to issue websocket ticket (${readHttpApiStatus(error) ?? "unknown"}).`,
+      ),
+      { cause: error },
+    );
+  }
 }
 
 export async function createServerPairingCredential(input?: {

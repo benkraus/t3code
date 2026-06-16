@@ -33,9 +33,14 @@ function MockWsTransport() {
 
 vi.mock("../primary", () => ({
   getPrimaryKnownEnvironment: mockGetPrimaryKnownEnvironment,
+  issuePrimaryWebSocketTicket: vi.fn(async () => ({
+    ticket: "primary-ws-ticket",
+    expiresAt: new Date("2026-06-16T12:00:00.000Z"),
+  })),
 }));
 
 vi.mock("../../lib/runtime", () => ({
+  runPrimaryHttp: vi.fn(),
   webRuntime: {
     runPromise: mockRemoteHttpRunPromise,
   },

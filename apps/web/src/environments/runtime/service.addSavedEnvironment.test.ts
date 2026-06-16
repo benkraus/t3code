@@ -96,6 +96,7 @@ vi.mock("@t3tools/shared/remote", async (importOriginal) => ({
 }));
 
 vi.mock("../../lib/runtime", () => ({
+  runPrimaryHttp: vi.fn(),
   webRuntime: {
     runPromise: mockRemoteHttpRunPromise,
   },
