@@ -841,6 +841,44 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("self-heals a missing binding from the requested live provider instance", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-live-without-binding");
+
+      yield* routing.codex.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-live-without-binding",
+        runtimeMode: "full-access",
+      });
+      assert.equal(Option.isNone(yield* directory.getBinding(threadId)), true);
+
+      yield* provider.sendTurn({
+        threadId,
+        input: "hello",
+        attachments: [],
+        modelSelection: {
+          instanceId: codexInstanceId,
+          model: "gpt-5-codex",
+        },
+      });
+
+      const binding = yield* directory.getBinding(threadId);
+      assert.equal(Option.isSome(binding), true);
+      if (Option.isSome(binding)) {
+        assert.equal(binding.value.provider, "codex");
+        assert.equal(binding.value.providerInstanceId, codexInstanceId);
+      }
+      yield* provider.stopSession({ threadId });
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.stopSession.mockClear();
+    }),
+  );
+
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

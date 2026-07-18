@@ -15,6 +15,7 @@ import { getFallbackThreadIdAfterDelete } from "../components/Sidebar.logic";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { terminalEnvironment } from "../state/terminal";
 import { threadEnvironment } from "../state/threads";
+import { herdrEnvironment } from "../state/herdr";
 import { vcsEnvironment } from "../state/vcs";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { refreshArchivedThreadsForEnvironment } from "../lib/archivedThreadsState";
@@ -51,6 +52,9 @@ export function useThreadActions() {
     reportFailure: false,
   });
   const stopThreadSession = useAtomCommand(threadEnvironment.stopSession);
+  const closeHerdrPane = useAtomCommand(herdrEnvironment.closePane, {
+    reportFailure: false,
+  });
   const removeWorktree = useAtomCommand(vcsEnvironment.removeWorktree, {
     reportFailure: false,
   });
@@ -151,7 +155,15 @@ export function useThreadActions() {
     async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
       const resolved = resolveThreadTarget(target);
       if (!resolved) {
-        // Thread not in main store (e.g. archived thread) — dispatch delete directly.
+        // Archived threads are absent from the main store, but may still own a live HerdR pane.
+        // The RPC is idempotent for non-HerdR threads and returns closed=false when unmatched.
+        const closeResult = await closeHerdrPane({
+          environmentId: target.environmentId,
+          input: { threadId: target.threadId },
+        });
+        if (closeResult._tag === "Failure") {
+          return closeResult;
+        }
         const result = await deleteThreadMutation({
           environmentId: target.environmentId,
           input: { threadId: target.threadId },
@@ -210,7 +222,15 @@ export function useThreadActions() {
         shouldDeleteWorktree = confirmationResult.value;
       }
 
-      if (thread.session && thread.session.status !== "stopped") {
+      if (thread.session?.providerName === "herdr") {
+        const closeResult = await closeHerdrPane({
+          environmentId: threadRef.environmentId,
+          input: { threadId: threadRef.threadId },
+        });
+        if (closeResult._tag === "Failure") {
+          return closeResult;
+        }
+      } else if (thread.session && thread.session.status !== "stopped") {
         await stopThreadSession({
           environmentId: threadRef.environmentId,
           input: { threadId: threadRef.threadId },
@@ -333,6 +353,7 @@ export function useThreadActions() {
       clearComposerDraftForThread,
       clearProjectDraftThreadById,
       clearTerminalUiState,
+      closeHerdrPane,
       closeTerminal,
       deleteThreadMutation,
       getCurrentRouteThreadRef,

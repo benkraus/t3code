@@ -751,6 +751,42 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("imports persisted provider user messages without starting another turn", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-user-item-import"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-imported"),
+      itemId: asItemId("user-item-imported"),
+      payload: {
+        itemType: "user_message",
+        status: "completed",
+        detail: "Persisted external prompt",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) => message.id === "user:user-item-imported",
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "user:user-item-imported",
+    );
+    expect(message).toMatchObject({
+      role: "user",
+      text: "Persisted external prompt",
+      turnId: "turn-imported",
+      streaming: false,
+    });
+    expect(thread.latestTurn?.turnId).not.toBe("turn-imported");
+  });
+
   it("preserves completed tool metadata on projected tool activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

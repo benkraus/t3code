@@ -293,6 +293,62 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("moves a thread to another project through a metadata update", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+
+    for (const projectId of ["project-source", "project-target"] as const) {
+      await system.run(
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make(`cmd-${projectId}-create`),
+          projectId: asProjectId(projectId),
+          title: projectId,
+          workspaceRoot: `/tmp/${projectId}`,
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          createdAt,
+        }),
+      );
+    }
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-project-move-create"),
+        threadId: ThreadId.make("thread-project-move"),
+        projectId: asProjectId("project-source"),
+        title: "Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-project-move"),
+        threadId: ThreadId.make("thread-project-move"),
+        projectId: asProjectId("project-target"),
+      }),
+    );
+
+    const readModel = await system.readModel();
+    expect(readModel.threads.find((thread) => thread.id === "thread-project-move")?.projectId).toBe(
+      "project-target",
+    );
+    await system.dispose();
+  });
+
   it("archives and unarchives threads through orchestration commands", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;

@@ -40,6 +40,16 @@ import {
   VcsStatusStreamEvent,
 } from "./git.ts";
 import {
+  HERDR_WS_METHODS,
+  HerdrClosePaneInput,
+  HerdrClosePaneResult,
+  HerdrCreateThreadInput,
+  HerdrCreateThreadResult,
+  HerdrPaneSnapshot,
+  HerdrRuntimeError,
+  HerdrSubscribePaneInput,
+} from "./herdr.ts";
+import {
   ReviewDiffPreviewError,
   ReviewDiffPreviewInput,
   ReviewDiffPreviewResult,
@@ -188,6 +198,10 @@ export const WS_METHODS = {
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
 
+  // HerdR external runtime methods
+  herdrCreateThread: HERDR_WS_METHODS.createThread,
+  herdrClosePane: HERDR_WS_METHODS.closePane,
+
   // Preview methods
   previewOpen: "preview.open",
   previewNavigate: "preview.navigate",
@@ -227,6 +241,7 @@ export const WS_METHODS = {
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeTerminalMetadata: "subscribeTerminalMetadata",
+  subscribeHerdrPane: HERDR_WS_METHODS.subscribePane,
   subscribePreviewEvents: "subscribePreviewEvents",
   subscribeDiscoveredLocalServers: "subscribeDiscoveredLocalServers",
   subscribeServerConfig: "subscribeServerConfig",
@@ -517,6 +532,25 @@ export const WsTerminalCloseRpc = Rpc.make(WS_METHODS.terminalClose, {
   error: Schema.Union([TerminalError, EnvironmentAuthorizationError]),
 });
 
+export const WsHerdrCreateThreadRpc = Rpc.make(WS_METHODS.herdrCreateThread, {
+  payload: HerdrCreateThreadInput,
+  success: HerdrCreateThreadResult,
+  error: Schema.Union([HerdrRuntimeError, EnvironmentAuthorizationError]),
+});
+
+export const WsHerdrClosePaneRpc = Rpc.make(WS_METHODS.herdrClosePane, {
+  payload: HerdrClosePaneInput,
+  success: HerdrClosePaneResult,
+  error: Schema.Union([HerdrRuntimeError, EnvironmentAuthorizationError]),
+});
+
+export const WsSubscribeHerdrPaneRpc = Rpc.make(WS_METHODS.subscribeHerdrPane, {
+  payload: HerdrSubscribePaneInput,
+  success: HerdrPaneSnapshot,
+  error: Schema.Union([HerdrRuntimeError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 export const WsPreviewOpenRpc = Rpc.make(WS_METHODS.previewOpen, {
   payload: PreviewOpenInput,
   success: PreviewSessionSnapshot,
@@ -726,6 +760,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsTerminalClearRpc,
   WsTerminalRestartRpc,
   WsTerminalCloseRpc,
+  WsHerdrCreateThreadRpc,
+  WsHerdrClosePaneRpc,
+  WsSubscribeHerdrPaneRpc,
   WsSubscribeTerminalEventsRpc,
   WsSubscribeTerminalMetadataRpc,
   WsPreviewOpenRpc,

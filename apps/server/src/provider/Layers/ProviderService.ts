@@ -441,10 +441,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     readonly threadId: ThreadId;
     readonly operation: string;
     readonly allowRecovery: boolean;
+    readonly preferredInstanceId?: ProviderInstanceId;
   }) {
     const bindingOption = yield* directory.getBinding(input.threadId);
     const binding = Option.getOrUndefined(bindingOption);
     if (!binding) {
+      if (input.preferredInstanceId !== undefined) {
+        const preferredAdapter = yield* registry.getByInstance(input.preferredInstanceId);
+        const hasPreferredSession = yield* preferredAdapter.hasSession(input.threadId);
+        if (hasPreferredSession) {
+          return {
+            adapter: preferredAdapter,
+            instanceId: input.preferredInstanceId,
+            threadId: input.threadId,
+            isActive: true,
+          } as const;
+        }
+      }
       return yield* toValidationError(
         input.operation,
         `Cannot route thread '${input.threadId}' because no persisted provider binding exists.`,
@@ -672,6 +685,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         threadId: input.threadId,
         operation: "ProviderService.sendTurn",
         allowRecovery: true,
+        ...(input.modelSelection === undefined
+          ? {}
+          : { preferredInstanceId: input.modelSelection.instanceId }),
       });
       metricProvider = routed.adapter.provider;
       metricModel = input.modelSelection?.model;

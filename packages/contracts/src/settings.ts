@@ -355,6 +355,45 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
 
+export const HerdrSettings = makeProviderSettingsSchema(
+  {
+    socketPath: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("~/.config/herdr/herdr.sock")),
+      Schema.annotateKey({
+        title: "Socket path",
+        description: "Unix socket exposed by the persistent HerdR server.",
+        providerSettingsForm: {
+          placeholder: "~/.config/herdr/herdr.sock",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    agentName: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("codex")),
+      Schema.annotateKey({
+        title: "Agent name",
+        description: "HerdR agent manifest used when creating a new thread.",
+        providerSettingsForm: { placeholder: "codex", clearWhenEmpty: "omit" },
+      }),
+    ),
+    agentCommand: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("codex")),
+      Schema.annotateKey({
+        title: "Agent command",
+        description: "Command used by HerdR when creating a new agent pane.",
+        providerSettingsForm: { placeholder: "codex", clearWhenEmpty: "omit" },
+      }),
+    ),
+    pollIntervalMs: Schema.Int.pipe(
+      Schema.check(Schema.isBetween({ minimum: 200, maximum: 30_000 })),
+      Schema.withDecodingDefault(Effect.succeed(750)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  { order: ["socketPath", "agentName", "agentCommand"] },
+);
+export type HerdrSettings = typeof HerdrSettings.Type;
+
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),

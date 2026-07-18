@@ -1465,6 +1465,15 @@ const make = Effect.gen(function* () {
               fallbackText: event.payload.detail,
             }
           : undefined;
+      const importedUserMessage =
+        event.type === "item.completed" &&
+        event.payload.itemType === "user_message" &&
+        event.payload.detail?.trim()
+          ? {
+              messageId: MessageId.make(`user:${event.itemId ?? event.turnId ?? event.eventId}`),
+              text: event.payload.detail.trim(),
+            }
+          : undefined;
       const proposedPlanCompletion =
         event.type === "turn.proposed.completed"
           ? {
@@ -1473,6 +1482,34 @@ const make = Effect.gen(function* () {
               planMarkdown: event.payload.planMarkdown,
             }
           : undefined;
+
+      if (importedUserMessage) {
+        const detailedThread = yield* getLoadedThreadDetail();
+        const eventTime = Date.parse(event.createdAt);
+        const duplicate = (detailedThread?.messages ?? []).some((message) => {
+          if (message.role !== "user" || message.text.trim() !== importedUserMessage.text) {
+            return false;
+          }
+          const messageTime = Date.parse(message.createdAt);
+          return (
+            Number.isFinite(eventTime) &&
+            Number.isFinite(messageTime) &&
+            Math.abs(eventTime - messageTime) <= 30_000
+          );
+        });
+        if (!duplicate) {
+          const turnId = toTurnId(event.turnId);
+          yield* orchestrationEngine.dispatch({
+            type: "thread.message.user.import",
+            commandId: yield* providerCommandId(event, "user-message-import"),
+            threadId: thread.id,
+            messageId: importedUserMessage.messageId,
+            text: importedUserMessage.text,
+            ...(turnId ? { turnId } : {}),
+            createdAt: event.createdAt,
+          });
+        }
+      }
 
       if (assistantCompletion) {
         const detailedThread = yield* getLoadedThreadDetail();

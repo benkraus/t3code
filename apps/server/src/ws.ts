@@ -48,6 +48,7 @@ import {
   OrchestrationReplayEventsError,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
+  HerdrRuntimeError,
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
   EnvironmentAuthorizationError,
@@ -114,6 +115,7 @@ import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
+import * as HerdrEnvironmentRegistry from "./herdr/HerdrEnvironmentRegistry.ts";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -330,6 +332,9 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.terminalClose, AuthTerminalOperateScope],
   [WS_METHODS.subscribeTerminalEvents, AuthTerminalOperateScope],
   [WS_METHODS.subscribeTerminalMetadata, AuthTerminalOperateScope],
+  [WS_METHODS.herdrCreateThread, AuthOrchestrationOperateScope],
+  [WS_METHODS.herdrClosePane, AuthTerminalOperateScope],
+  [WS_METHODS.subscribeHerdrPane, AuthOrchestrationReadScope],
   [WS_METHODS.previewOpen, AuthOrchestrationOperateScope],
   [WS_METHODS.previewNavigate, AuthOrchestrationOperateScope],
   [WS_METHODS.previewResize, AuthOrchestrationOperateScope],
@@ -944,6 +949,54 @@ const makeWsRpcLayer = (
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
       return WsRpcGroup.of({
+        [WS_METHODS.herdrCreateThread]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.herdrCreateThread,
+            authorizeEffect(
+              AuthOrchestrationOperateScope,
+              Effect.gen(function* () {
+                const environment = yield* HerdrEnvironmentRegistry.getEnvironment(
+                  input.instanceId,
+                );
+                if (!environment) {
+                  return yield* new HerdrRuntimeError({
+                    operation: "thread.create",
+                    message: `No HerdR environment is registered for '${input.instanceId}'.`,
+                  });
+                }
+                const threadId = yield* environment.createThread(input.cwd, input.title);
+                yield* environment.refresh.pipe(Effect.ignore);
+                return { threadId };
+              }),
+            ),
+            { "rpc.aggregate": "herdr" },
+          ),
+        [WS_METHODS.herdrClosePane]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.herdrClosePane,
+            authorizeEffect(
+              AuthTerminalOperateScope,
+              Effect.gen(function* (): Effect.fn.Return<
+                { readonly closed: boolean },
+                HerdrRuntimeError
+              > {
+                const match = yield* HerdrEnvironmentRegistry.findByThreadId(input.threadId);
+                if (!match) return { closed: false };
+                yield* match.environment.closePane(input.threadId);
+                return { closed: true };
+              }),
+            ),
+            { "rpc.aggregate": "herdr" },
+          ),
+        [WS_METHODS.subscribeHerdrPane]: (input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeHerdrPane,
+            authorizeStream(
+              AuthOrchestrationReadScope,
+              HerdrEnvironmentRegistry.watchPane(input.threadId),
+            ),
+            { "rpc.aggregate": "herdr" },
+          ),
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
