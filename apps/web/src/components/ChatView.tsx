@@ -208,6 +208,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { HerdrPaneView } from "./chat/HerdrPaneView";
+import { HerdrLiveTimelineProvider } from "./chat/HerdrLiveTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
@@ -2204,6 +2205,27 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThread?.proposedPlans, timelineMessages, workLogEntries],
   );
   const isHerdrThread = activeThread?.session?.providerName === "herdr";
+  const latestHerdrUserMessage = useMemo(
+    () =>
+      isHerdrThread
+        ? (timelineMessages.findLast((message) => message.role === "user") ?? null)
+        : null,
+    [isHerdrThread, timelineMessages],
+  );
+  const runningHerdrTurnId =
+    isHerdrThread && activeThread?.session?.status === "running"
+      ? activeThread.session.activeTurnId
+      : null;
+  const hasCanonicalHerdrAssistant = useMemo(
+    () =>
+      latestHerdrUserMessage !== null &&
+      timelineMessages.some(
+        (message) =>
+          message.role === "assistant" &&
+          message.createdAt.localeCompare(latestHerdrUserMessage.createdAt) >= 0,
+      ),
+    [latestHerdrUserMessage, timelineMessages],
+  );
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
   const draftHeroDockRequested =
     activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
@@ -5314,40 +5336,50 @@ function ChatViewContent(props: ChatViewProps) {
                   bottomInset={composerOverlayHeight}
                 />
               ) : (
-                <MessagesTimeline
-                  key={activeThread.id}
-                  isWorking={isWorking}
-                  activeTurnInProgress={isWorking || !latestTurnSettled}
-                  activeTurnStartedAt={activeWorkStartedAt}
-                  listRef={legendListRef}
-                  timelineEntries={timelineEntries}
-                  latestTurn={activeLatestTurn}
-                  runningTurnId={
-                    activeThread.session?.status === "running"
-                      ? activeThread.session.activeTurnId
-                      : null
-                  }
-                  turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
-                  activeThreadEnvironmentId={activeThread.environmentId}
-                  routeThreadKey={routeThreadKey}
-                  onOpenTurnDiff={onOpenTurnDiff}
-                  revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
-                  onRevertUserMessage={onRevertUserMessage}
-                  isRevertingCheckpoint={isRevertingCheckpoint}
-                  onImageExpand={onExpandTimelineImage}
-                  markdownCwd={gitCwd ?? undefined}
-                  resolvedTheme={resolvedTheme}
-                  timestampFormat={timestampFormat}
-                  workspaceRoot={activeWorkspaceRoot}
-                  skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
-                  anchorMessageId={timelineAnchorMessageId}
-                  onAnchorReady={onTimelineAnchorReady}
-                  onAnchorSizeChanged={onTimelineAnchorSizeChanged}
-                  contentInsetEndAdjustment={composerOverlayHeight}
-                  onIsAtEndChange={onIsAtEndChange}
-                  onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
-                  hideEmptyPlaceholder={isDraftHeroState}
-                />
+                <HerdrLiveTimelineProvider
+                  enabled={isHerdrThread}
+                  environmentId={activeThread.environmentId}
+                  threadId={activeThread.id}
+                  latestUserMessage={latestHerdrUserMessage}
+                  runningTurnId={runningHerdrTurnId}
+                  isWorking={isHerdrThread && isWorking}
+                  hasCanonicalAssistant={hasCanonicalHerdrAssistant}
+                >
+                  <MessagesTimeline
+                    key={activeThread.id}
+                    isWorking={isWorking}
+                    activeTurnInProgress={isWorking || !latestTurnSettled}
+                    activeTurnStartedAt={activeWorkStartedAt}
+                    listRef={legendListRef}
+                    timelineEntries={timelineEntries}
+                    latestTurn={activeLatestTurn}
+                    runningTurnId={
+                      activeThread.session?.status === "running"
+                        ? activeThread.session.activeTurnId
+                        : null
+                    }
+                    turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+                    activeThreadEnvironmentId={activeThread.environmentId}
+                    routeThreadKey={routeThreadKey}
+                    onOpenTurnDiff={onOpenTurnDiff}
+                    revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
+                    onRevertUserMessage={onRevertUserMessage}
+                    isRevertingCheckpoint={isRevertingCheckpoint}
+                    onImageExpand={onExpandTimelineImage}
+                    markdownCwd={gitCwd ?? undefined}
+                    resolvedTheme={resolvedTheme}
+                    timestampFormat={timestampFormat}
+                    workspaceRoot={activeWorkspaceRoot}
+                    skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
+                    anchorMessageId={timelineAnchorMessageId}
+                    onAnchorReady={onTimelineAnchorReady}
+                    onAnchorSizeChanged={onTimelineAnchorSizeChanged}
+                    contentInsetEndAdjustment={composerOverlayHeight}
+                    onIsAtEndChange={onIsAtEndChange}
+                    onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
+                    hideEmptyPlaceholder={isDraftHeroState}
+                  />
+                </HerdrLiveTimelineProvider>
               )}
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}

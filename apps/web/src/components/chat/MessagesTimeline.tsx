@@ -81,6 +81,7 @@ import {
   type TimelineLatestTurn,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
+import { useHerdrLiveTimelineEntry } from "./HerdrLiveTimeline";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   deriveDisplayedUserMessageState,
@@ -215,6 +216,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onManualNavigation,
   hideEmptyPlaceholder = false,
 }: MessagesTimelineProps) {
+  const herdrLiveEntry = useHerdrLiveTimelineEntry();
+  const renderedTimelineEntries = useMemo(
+    () =>
+      herdrLiveEntry
+        ? [...timelineEntries, herdrLiveEntry].toSorted((left, right) =>
+            left.createdAt.localeCompare(right.createdAt),
+          )
+        : timelineEntries,
+    [herdrLiveEntry, timelineEntries],
+  );
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
@@ -296,7 +307,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const rawRows = useMemo(
     () =>
       deriveMessagesTimelineRows({
-        timelineEntries,
+        timelineEntries: renderedTimelineEntries,
         latestTurn,
         runningTurnId,
         expandedTurnIds,
@@ -307,7 +318,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         revertTurnCountByUserMessageId,
       }),
     [
-      timelineEntries,
+      renderedTimelineEntries,
       latestTurn,
       runningTurnId,
       expandedTurnIds,
