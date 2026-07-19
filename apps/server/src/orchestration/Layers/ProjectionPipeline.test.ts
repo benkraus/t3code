@@ -9,12 +9,14 @@ import {
   TurnId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -120,7 +122,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         payload: {
           threadId: ThreadId.make("thread-1"),
           messageId: MessageId.make("message-1"),
-          role: "assistant",
+          role: "user",
           text: "hello",
           turnId: null,
           streaming: false,
@@ -171,6 +173,100 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       for (const row of stateRows) {
         assert.equal(row.lastAppliedSequence, 3);
       }
+
+      yield* sql`
+        UPDATE projection_threads
+        SET latest_user_message_at = NULL
+        WHERE thread_id = 'thread-1'
+      `;
+      yield* projectionPipeline.bootstrap;
+
+      const shellSummaryRows = yield* sql<{ readonly latestUserMessageAt: string | null }>`
+        SELECT latest_user_message_at AS "latestUserMessageAt"
+        FROM projection_threads
+        WHERE thread_id = 'thread-1'
+      `;
+      assert.deepEqual(shellSummaryRows, [{ latestUserMessageAt: now }]);
+    }),
+  );
+
+  it.effect("bootstraps beyond the event store's default read limit", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const [baseline] = yield* sql<{
+        readonly maxSequence: number;
+        readonly projectCount: number;
+      }>`
+        SELECT
+          COALESCE((SELECT MAX(sequence) FROM orchestration_events), 0) AS "maxSequence",
+          (SELECT COUNT(*) FROM projection_projects) AS "projectCount"
+      `;
+      const maxSequence = baseline?.maxSequence ?? 0;
+      const projectCount = baseline?.projectCount ?? 0;
+
+      yield* sql`
+        WITH RECURSIVE event_number(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM event_number WHERE value < 1001
+        )
+        INSERT INTO orchestration_events (
+          sequence,
+          event_id,
+          aggregate_kind,
+          stream_id,
+          stream_version,
+          event_type,
+          occurred_at,
+          command_id,
+          actor_kind,
+          payload_json,
+          metadata_json
+        )
+        SELECT
+          ${maxSequence} + value,
+          'evt-bootstrap-' || value,
+          'project',
+          'project-bootstrap-limit-' || value,
+          0,
+          'project.created',
+          '2026-01-01T00:00:00.000Z',
+          'cmd-bootstrap-' || value,
+          'client',
+          json_object(
+            'projectId',
+            'project-bootstrap-limit-' || value,
+            'title',
+            'Project ' || value,
+            'workspaceRoot',
+            '/tmp/project-bootstrap-limit-' || value,
+            'defaultModelSelection',
+            json('null'),
+            'scripts',
+            json('[]'),
+            'createdAt',
+            '2026-01-01T00:00:00.000Z',
+            'updatedAt',
+            '2026-01-01T00:00:00.000Z'
+          ),
+          '{}'
+        FROM event_number
+      `;
+
+      yield* projectionPipeline.bootstrap;
+
+      const projectRows = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count FROM projection_projects
+      `;
+      const stateRows = yield* sql<{ readonly lastAppliedSequence: number }>`
+        SELECT last_applied_sequence AS "lastAppliedSequence"
+        FROM projection_state
+        WHERE projector = 'projection.projects'
+      `;
+
+      assert.deepEqual(projectRows, [{ count: projectCount + 1001 }]);
+      assert.deepEqual(stateRows, [{ lastAppliedSequence: maxSequence + 1001 }]);
     }),
   );
 });
@@ -924,6 +1020,240 @@ it.layer(
       assert.isTrue(yield* exists(keepPath));
       assert.isFalse(yield* exists(removePath));
       assert.isTrue(yield* exists(otherThreadPath));
+    }),
+  );
+});
+
+it.layer(
+  Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-bootstrap-")),
+)("OrchestrationProjectionPipeline", (it) => {
+  it.effect("reconciles reverted attachments after a failed bootstrap resumes", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const { attachmentsDir } = yield* ServerConfig;
+      const now = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("Thread Bootstrap.Files");
+      const revertedAttachmentId = "thread-bootstrap-files-00000000-0000-4000-8000-000000000001";
+      const laterAttachmentId = "thread-bootstrap-files-00000000-0000-4000-8000-000000000002";
+
+      yield* eventStore.append({
+        type: "project.created",
+        eventId: EventId.make("evt-bootstrap-files-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-bootstrap-files"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-bootstrap-files-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-bootstrap-files-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-bootstrap-files"),
+          title: "Project Bootstrap Files",
+          workspaceRoot: "/tmp/project-bootstrap-files",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-bootstrap-files-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-bootstrap-files-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-bootstrap-files-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-bootstrap-files"),
+          title: "Thread Bootstrap Files",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-bootstrap-files-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-bootstrap-files-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-bootstrap-files-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-bootstrap-files-reverted"),
+          role: "user",
+          text: "Reverted",
+          attachments: [
+            {
+              type: "image",
+              id: revertedAttachmentId,
+              name: "reverted.png",
+              mimeType: "image/png",
+              sizeBytes: 8,
+            },
+          ],
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.reverted",
+        eventId: EventId.make("evt-bootstrap-files-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-bootstrap-files-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-bootstrap-files-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnCount: 0,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-bootstrap-files-5"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-bootstrap-files-5"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-bootstrap-files-5"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-bootstrap-files-later"),
+          role: "user",
+          text: "Later",
+          attachments: [
+            {
+              type: "image",
+              id: laterAttachmentId,
+              name: "later.png",
+              mimeType: "image/png",
+              sizeBytes: 5,
+            },
+          ],
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      const revertedPath = path.join(attachmentsDir, `${revertedAttachmentId}.png`);
+      const laterPath = path.join(attachmentsDir, `${laterAttachmentId}.png`);
+      yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFileString(revertedPath, "reverted");
+      yield* fileSystem.writeFileString(laterPath, "later");
+
+      yield* sql`
+        CREATE TRIGGER fail_bootstrap_after_message_projection
+        BEFORE INSERT ON projection_state
+        WHEN NEW.projector = 'projection.thread-proposed-plans'
+        BEGIN
+          SELECT RAISE(ABORT, 'forced-bootstrap-failure');
+        END;
+      `;
+      const failedBootstrap = yield* Effect.result(projectionPipeline.bootstrap);
+      assert.strictEqual(failedBootstrap._tag, "Failure");
+      assert.isTrue(yield* exists(revertedPath));
+      assert.isTrue(yield* exists(laterPath));
+
+      yield* sql`DROP TRIGGER fail_bootstrap_after_message_projection`;
+      yield* projectionPipeline.bootstrap;
+
+      assert.isFalse(yield* exists(revertedPath));
+      assert.isTrue(yield* exists(laterPath));
+      const attachmentState = yield* sql<{ readonly lastAppliedSequence: number }>`
+        SELECT last_applied_sequence AS "lastAppliedSequence"
+        FROM projection_state
+        WHERE projector = 'projection.attachment-side-effects'
+      `;
+      assert.deepStrictEqual(attachmentState, [{ lastAppliedSequence: 5 }]);
+    }),
+  );
+});
+
+const attachmentReadFailure = PlatformError.systemError({
+  _tag: "PermissionDenied",
+  module: "FileSystem",
+  method: "readDirectory",
+  pathOrDescriptor: "/attachments",
+  description: "Test attachment directory permission failure.",
+});
+
+const AttachmentReadFailureLayer = OrchestrationProjectionPipelineLive.pipe(
+  Layer.provideMerge(OrchestrationEventStoreLive),
+  Layer.provideMerge(
+    ServerConfig.layerTest(process.cwd(), "/tmp/t3-projection-attachments-read-failure"),
+  ),
+  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(NodePath.layer),
+  Layer.provideMerge(
+    FileSystem.layerNoop({
+      makeDirectory: () => Effect.void,
+      readDirectory: () => Effect.fail(attachmentReadFailure),
+    }),
+  ),
+);
+
+it.layer(Layer.fresh(AttachmentReadFailureLayer))("OrchestrationProjectionPipeline", (it) => {
+  it.effect("does not advance attachment cleanup state after filesystem failures", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+
+      yield* eventStore.append({
+        type: "thread.deleted",
+        eventId: EventId.make("evt-attachment-read-failure"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-attachment-read-failure"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-attachment-read-failure"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-attachment-read-failure"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-attachment-read-failure"),
+          deletedAt: now,
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const attachmentState = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM projection_state
+        WHERE projector = 'projection.attachment-side-effects'
+      `;
+      assert.deepStrictEqual(attachmentState, [{ count: 0 }]);
     }),
   );
 });

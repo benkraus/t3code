@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   EventId,
+  ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
@@ -182,6 +183,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       Effect.succeed(
         threadId === THREAD_ID && options?.cached !== undefined
           ? Option.some({
+              snapshotSchemaVersion: ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
               snapshotSequence: CACHED_SNAPSHOT_SEQUENCE,
               thread: options.cached,
             })
@@ -228,6 +230,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
 const snapshot = (thread: OrchestrationThread): OrchestrationThreadStreamItem => ({
   kind: "snapshot",
   snapshot: {
+    snapshotSchemaVersion: ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
     snapshotSequence: 1,
     thread,
   },
@@ -326,6 +329,28 @@ describe("EnvironmentThreads", () => {
       expect(Option.getOrThrow(state.data).title).toBe("Live title");
       expect((yield* Ref.get(harness.savedThreads)).at(-1)?.thread.title).toBe("Live title");
       expect((yield* Ref.get(harness.savedThreads)).at(-1)?.snapshotSequence).toBe(2);
+      expect((yield* Ref.get(harness.savedThreads)).at(-1)?.snapshotSchemaVersion).toBe(
+        ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
+      );
+    }),
+  );
+
+  it.effect("persists the snapshot schema version during teardown", () =>
+    Effect.gen(function* () {
+      const savedThreads = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness({ cached: BASE_THREAD });
+          yield* awaitThreadState(
+            harness.observed,
+            (value) => value.status === "live" && Option.isSome(value.data),
+          );
+          return harness.savedThreads;
+        }),
+      );
+
+      expect((yield* Ref.get(savedThreads)).at(-1)?.snapshotSchemaVersion).toBe(
+        ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
+      );
     }),
   );
 
@@ -358,7 +383,11 @@ describe("EnvironmentThreads", () => {
     Effect.gen(function* () {
       const httpThread: OrchestrationThread = { ...BASE_THREAD, title: "HTTP title" };
       const harness = yield* makeHarness({
-        httpSnapshot: Option.some({ snapshotSequence: 1, thread: httpThread }),
+        httpSnapshot: Option.some({
+          snapshotSchemaVersion: ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
+          snapshotSequence: 1,
+          thread: httpThread,
+        }),
       });
       // No socket snapshot is pushed; only a live event arrives over the socket.
       // It can only be applied if the HTTP snapshot already seeded the thread.

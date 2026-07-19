@@ -67,20 +67,42 @@ describe("codexThreadRuntimeEvents", () => {
       "turn.completed",
     ]);
     expect(events[1]).toMatchObject({
-      itemId: "user-item-1",
+      itemId: "herdr-codex:herdr-thread-1:codex-session-1:user-item-1",
+      providerRefs: { providerItemId: "user-item-1" },
       payload: { itemType: "user_message", detail: "Update the parser" },
     });
     expect(events[2]).toMatchObject({
-      itemId: "command-item-1",
+      itemId: "herdr-codex:herdr-thread-1:codex-session-1:command-item-1",
       payload: { itemType: "command_execution", detail: "vp test" },
     });
     expect(events[3]).toMatchObject({
-      itemId: "assistant-item-1",
+      itemId: "herdr-codex:herdr-thread-1:codex-session-1:assistant-item-1",
       payload: {
         itemType: "assistant_message",
         detail: "Implemented.\n\n```ts\nconst parsed = true;\n```",
       },
     });
     expect(runtimeEventFingerprint(events[3]!)).toBe(runtimeEventFingerprint(events[3]!));
+  });
+
+  it("scopes runtime event and item ids to the canonical thread", () => {
+    const first = codexThreadRuntimeEvents({
+      instanceId: ProviderInstanceId.make("herdr"),
+      canonicalThreadId: ThreadId.make("herdr-thread-1"),
+      sessionId: "codex-session-1",
+      thread,
+      observedAt: "2026-07-18T20:00:00.000Z",
+    });
+    const second = codexThreadRuntimeEvents({
+      instanceId: ProviderInstanceId.make("herdr"),
+      canonicalThreadId: ThreadId.make("herdr-thread-2"),
+      sessionId: "codex-session-1",
+      thread,
+      observedAt: "2026-07-18T20:00:00.000Z",
+    });
+
+    expect(first[1]?.providerRefs?.providerItemId).toBe(second[1]?.providerRefs?.providerItemId);
+    expect(first[1]?.eventId).not.toBe(second[1]?.eventId);
+    expect(first[1]?.itemId).not.toBe(second[1]?.itemId);
   });
 });

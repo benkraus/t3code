@@ -27,8 +27,21 @@ function isoFromUnixSeconds(value: number | null | undefined, fallback: string):
   });
 }
 
-function eventId(sessionId: string, turnId: string, suffix: string): EventId {
-  return EventId.make(`herdr-codex:${sessionId}:${turnId}:${suffix}`);
+function eventId(
+  canonicalThreadId: ThreadId,
+  sessionId: string,
+  turnId: string,
+  suffix: string,
+): EventId {
+  return EventId.make(`herdr-codex:${canonicalThreadId}:${sessionId}:${turnId}:${suffix}`);
+}
+
+function runtimeItemId(
+  canonicalThreadId: ThreadId,
+  sessionId: string,
+  itemId: string,
+): RuntimeItemId {
+  return RuntimeItemId.make(`herdr-codex:${canonicalThreadId}:${sessionId}:${itemId}`);
 }
 
 function userMessageText(item: Extract<CodexItem, { type: "userMessage" }>): string {
@@ -71,12 +84,12 @@ function itemEvent(input: {
 }): ProviderRuntimeEvent | null {
   const { instanceId, canonicalThreadId, sessionId, turn, item, createdAt } = input;
   const base = {
-    eventId: eventId(sessionId, turn.id, `item:${item.id}`),
+    eventId: eventId(canonicalThreadId, sessionId, turn.id, `item:${item.id}`),
     provider: HERDR_DRIVER,
     providerInstanceId: instanceId,
     threadId: canonicalThreadId,
     turnId: TurnId.make(turn.id),
-    itemId: RuntimeItemId.make(item.id),
+    itemId: runtimeItemId(canonicalThreadId, sessionId, item.id),
     createdAt,
     providerRefs: {
       providerTurnId: turn.id,
@@ -283,7 +296,7 @@ export function codexThreadRuntimeEvents(input: {
     const createdAt = isoFromUnixSeconds(turn.startedAt, input.observedAt);
     const canonicalTurnId = TurnId.make(turn.id);
     events.push({
-      eventId: eventId(input.sessionId, turn.id, "turn:started"),
+      eventId: eventId(input.canonicalThreadId, input.sessionId, turn.id, "turn:started"),
       provider: HERDR_DRIVER,
       providerInstanceId: input.instanceId,
       threadId: input.canonicalThreadId,
@@ -301,7 +314,7 @@ export function codexThreadRuntimeEvents(input: {
 
     if (turn.status !== "inProgress") {
       events.push({
-        eventId: eventId(input.sessionId, turn.id, "turn:completed"),
+        eventId: eventId(input.canonicalThreadId, input.sessionId, turn.id, "turn:completed"),
         provider: HERDR_DRIVER,
         providerInstanceId: input.instanceId,
         threadId: input.canonicalThreadId,

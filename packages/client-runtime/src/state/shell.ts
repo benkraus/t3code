@@ -1,4 +1,5 @@
 import {
+  ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
   ORCHESTRATION_WS_METHODS,
   type EnvironmentId,
   type OrchestrationShellSnapshot,
@@ -180,7 +181,13 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
 
       const subscribeInput = Option.match(base, {
         onNone: () => ({}),
-        onSome: (snapshot) => ({ afterSequence: snapshot.snapshotSequence }),
+        onSome: (snapshot) =>
+          snapshot.snapshotSchemaVersion === ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION
+            ? {
+                afterSequence: snapshot.snapshotSequence,
+                snapshotSchemaVersion: snapshot.snapshotSchemaVersion,
+              }
+            : {},
       });
 
       yield* subscribe(ORCHESTRATION_WS_METHODS.subscribeShell, subscribeInput, {

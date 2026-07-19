@@ -35,6 +35,7 @@ import {
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
+  ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
   ORCHESTRATION_WS_METHODS,
   type ProjectEntriesFailure,
   type ProjectFileFailure,
@@ -1124,6 +1125,11 @@ const makeWsRpcLayer = (
                   Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
                 ),
               );
+              const liveBuffer = yield* Queue.unbounded<OrchestrationShellStreamItem>();
+              yield* Effect.forkScoped(
+                liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
+              );
+              const bufferedLiveStream = Stream.fromQueue(liveBuffer);
 
               // When the client already holds a shell snapshot (cached, or loaded
               // over HTTP) it passes that snapshot's sequence, and we resume by
@@ -1134,32 +1140,27 @@ const makeWsRpcLayer = (
               // replay window is lost; overlapping events are deduped by sequence
               // on the client. The full range is read (not the store's default
               // page limit) since the shell filter runs after reading.
-              if (input.afterSequence !== undefined) {
+              if (
+                input.afterSequence !== undefined &&
+                input.snapshotSchemaVersion === ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION
+              ) {
                 const afterSequence = input.afterSequence;
-                return Stream.unwrap(
-                  Effect.gen(function* () {
-                    const liveBuffer = yield* Queue.unbounded<OrchestrationShellStreamItem>();
-                    yield* Effect.forkScoped(
-                      liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
-                    );
-                    const catchUpStream = orchestrationEngine
-                      .readEvents(afterSequence, Number.MAX_SAFE_INTEGER)
-                      .pipe(
-                        Stream.mapEffect(toShellStreamEvent),
-                        Stream.flatMap((event) =>
-                          Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
-                        ),
-                        Stream.mapError(
-                          (cause) =>
-                            new OrchestrationGetSnapshotError({
-                              message: "Failed to replay orchestration shell events",
-                              cause,
-                            }),
-                        ),
-                      );
-                    return Stream.concat(catchUpStream, Stream.fromQueue(liveBuffer));
-                  }),
-                );
+                const catchUpStream = orchestrationEngine
+                  .readEvents(afterSequence, Number.MAX_SAFE_INTEGER)
+                  .pipe(
+                    Stream.mapEffect(toShellStreamEvent),
+                    Stream.flatMap((event) =>
+                      Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
+                    ),
+                    Stream.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: "Failed to replay orchestration shell events",
+                          cause,
+                        }),
+                    ),
+                  );
+                return Stream.concat(catchUpStream, bufferedLiveStream);
               }
 
               const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
@@ -1180,7 +1181,7 @@ const makeWsRpcLayer = (
                   kind: "snapshot" as const,
                   snapshot,
                 }),
-                liveStream,
+                bufferedLiveStream,
               );
             }),
             { "rpc.aggregate": "orchestration" },
@@ -1244,7 +1245,10 @@ const makeWsRpcLayer = (
               // page-bounded limit): the range is normally tiny (a fresh HTTP
               // snapshot sequence) and the per-thread filter runs after reading,
               // so a global cap could otherwise omit this thread's events.
-              if (input.afterSequence !== undefined) {
+              if (
+                input.afterSequence !== undefined &&
+                input.snapshotSchemaVersion === ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION
+              ) {
                 const afterSequence = input.afterSequence;
                 const catchUpStream = orchestrationEngine
                   .readEvents(afterSequence, Number.MAX_SAFE_INTEGER)

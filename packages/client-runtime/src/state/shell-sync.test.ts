@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
   ORCHESTRATION_WS_METHODS,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamItem,
@@ -39,6 +40,7 @@ const PREPARED: PreparedConnection = {
 };
 
 const LIVE_SHELL_SNAPSHOT: OrchestrationShellSnapshot = {
+  snapshotSchemaVersion: ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
   snapshotSequence: 1,
   projects: [],
   threads: [],
@@ -140,6 +142,7 @@ describe("environment shell synchronization", () => {
   it.effect("resumes a warm shell cache via afterSequence without an HTTP fetch", () =>
     Effect.gen(function* () {
       const cachedSnapshot: OrchestrationShellSnapshot = {
+        snapshotSchemaVersion: ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
         snapshotSequence: 5,
         projects: [],
         threads: [],

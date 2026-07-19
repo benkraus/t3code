@@ -411,6 +411,7 @@ export const OrchestrationThreadShell = Schema.Struct({
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 
 export const OrchestrationShellSnapshot = Schema.Struct({
+  snapshotSchemaVersion: Schema.optionalKey(NonNegativeInt),
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProjectShell),
   threads: Schema.Array(OrchestrationThreadShell),
@@ -451,7 +452,10 @@ export const OrchestrationShellStreamItem = Schema.Union([
 ]);
 export type OrchestrationShellStreamItem = typeof OrchestrationShellStreamItem.Type;
 
+export const ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION = 1;
+
 export const OrchestrationSubscribeShellInput = Schema.Struct({
+  snapshotSchemaVersion: Schema.optionalKey(NonNegativeInt),
   /**
    * When provided, the server skips the initial full shell snapshot and instead
    * replays shell events after this sequence before streaming live events.
@@ -466,6 +470,7 @@ export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShel
 
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
+  snapshotSchemaVersion: Schema.optionalKey(NonNegativeInt),
   /**
    * When provided, the server skips the initial snapshot frame and instead
    * replays events after this sequence before streaming live events. Clients
@@ -478,6 +483,7 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
 export const OrchestrationThreadDetailSnapshot = Schema.Struct({
+  snapshotSchemaVersion: Schema.optionalKey(NonNegativeInt),
   snapshotSequence: NonNegativeInt,
   thread: OrchestrationThread,
 });

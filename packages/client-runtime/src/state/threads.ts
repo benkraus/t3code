@@ -1,4 +1,5 @@
 import {
+  ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
   ORCHESTRATION_WS_METHODS,
   type EnvironmentId as EnvironmentIdType,
   type OrchestrationThread,
@@ -44,6 +45,17 @@ function formatThreadError(cause: Cause.Cause<unknown>): string {
 function shouldPersistThread(thread: OrchestrationThread): boolean {
   const status = thread.session?.status;
   return status !== "starting" && status !== "running";
+}
+
+function makeThreadSnapshot(
+  snapshotSequence: number,
+  thread: OrchestrationThread,
+): OrchestrationThreadDetailSnapshot {
+  return {
+    snapshotSchemaVersion: ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
+    snapshotSequence,
+    thread,
+  };
 }
 
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
@@ -138,7 +150,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     // persist once it settles so cache encoding stays off the streaming path.
     if (shouldPersistThread(thread)) {
       const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
-      yield* Queue.offer(persistence, { snapshotSequence, thread });
+      yield* Queue.offer(persistence, makeThreadSnapshot(snapshotSequence, thread));
     }
   });
 
@@ -239,7 +251,14 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
       const subscribeInput = Option.match(base, {
         onNone: () => ({ threadId }),
-        onSome: (snapshot) => ({ threadId, afterSequence: snapshot.snapshotSequence }),
+        onSome: (snapshot) =>
+          snapshot.snapshotSchemaVersion === ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION
+            ? {
+                threadId,
+                afterSequence: snapshot.snapshotSequence,
+                snapshotSchemaVersion: snapshot.snapshotSchemaVersion,
+              }
+            : { threadId },
       });
 
       yield* subscribe(ORCHESTRATION_WS_METHODS.subscribeThread, subscribeInput, {
@@ -255,7 +274,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         Option.match(current.data, {
           onNone: () => Effect.void,
           onSome: (thread) =>
-            shouldPersistThread(thread) ? persist({ snapshotSequence, thread }) : Effect.void,
+            shouldPersistThread(thread)
+              ? persist(makeThreadSnapshot(snapshotSequence, thread))
+              : Effect.void,
         }),
       ),
     ),

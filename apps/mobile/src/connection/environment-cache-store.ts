@@ -1,6 +1,8 @@
 import {
   ConnectionPersistenceError,
   EnvironmentCacheStore,
+  SHELL_SNAPSHOT_CACHE_SCHEMA_VERSION,
+  THREAD_SNAPSHOT_CACHE_SCHEMA_VERSION,
 } from "@t3tools/client-runtime/platform";
 import {
   type EnvironmentId,
@@ -16,8 +18,6 @@ import * as Schema from "effect/Schema";
 
 import * as MobileDatabase from "../persistence/mobile-database";
 
-const SHELL_SNAPSHOT_CACHE_SCHEMA_VERSION = 1;
-const THREAD_SNAPSHOT_CACHE_SCHEMA_VERSION = 2;
 const SERVER_CONFIG_CACHE_SCHEMA_VERSION = 1;
 const VCS_REFS_CACHE_SCHEMA_VERSION = 1;
 

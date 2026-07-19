@@ -7,6 +7,7 @@ import {
   OrchestrationCheckpointFile,
   OrchestrationProposedPlanId,
   OrchestrationReadModel,
+  ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
@@ -1490,6 +1491,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             );
 
             const snapshot = {
+              snapshotSchemaVersion: ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
               snapshotSequence: computeSnapshotSequence(stateRows),
               projects: Arr.filterMap(projectRows, (row) =>
                 row.deletedAt === null
@@ -1625,6 +1627,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             );
 
             const snapshot = {
+              snapshotSchemaVersion: ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
               snapshotSequence: computeSnapshotSequence(stateRows),
               projects: Arr.filterMap(projectRows, (row) =>
                 row.deletedAt === null && activeProjectIds.has(row.projectId)
@@ -2050,7 +2053,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             return Option.none<OrchestrationThreadDetailSnapshot>();
           }
           const { snapshotSequence } = yield* getSnapshotSequence();
-          return Option.some({ snapshotSequence, thread: thread.value });
+          return Option.some({
+            snapshotSchemaVersion: ORCHESTRATION_SNAPSHOT_SCHEMA_VERSION,
+            snapshotSequence,
+            thread: thread.value,
+          });
         }),
       )
       .pipe(

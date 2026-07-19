@@ -65,6 +65,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   threadTurns: "projection.thread-turns",
   checkpoints: "projection.checkpoints",
   pendingApprovals: "projection.pending-approvals",
+  attachmentSideEffects: "projection.attachment-side-effects",
 } as const;
 
 type ProjectorName =
@@ -104,6 +105,13 @@ interface ProjectorDefinition {
 interface AttachmentSideEffects {
   readonly deletedThreadIds: Set<string>;
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
+}
+
+function makeAttachmentSideEffects(): AttachmentSideEffects {
+  return {
+    deletedThreadIds: new Set<string>(),
+    prunedThreadRelativePaths: new Map<string, Set<string>>(),
+  };
 }
 
 const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsForProjection")(
@@ -361,7 +369,11 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
   const attachmentsRootDir = serverConfig.attachmentsDir;
   const readAttachmentRootEntries = fileSystem
     .readDirectory(attachmentsRootDir, { recursive: false })
-    .pipe(Effect.orElseSucceed(() => [] as Array<string>));
+    .pipe(
+      Effect.catchTag("PlatformError", (cause) =>
+        cause.reason._tag === "NotFound" ? Effect.succeed([] as Array<string>) : Effect.fail(cause),
+      ),
+    );
 
   const removeDeletedThreadAttachmentEntry = Effect.fn("removeDeletedThreadAttachmentEntry")(
     function* (threadSegment: string, entry: string) {
@@ -423,7 +435,13 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
     }
 
     const absolutePath = path.join(attachmentsRootDir, relativePath);
-    const fileInfo = yield* fileSystem.stat(absolutePath).pipe(Effect.orElseSucceed(() => null));
+    const fileInfo = yield* fileSystem
+      .stat(absolutePath)
+      .pipe(
+        Effect.catchTag("PlatformError", (cause) =>
+          cause.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(cause),
+        ),
+      );
     if (!fileInfo || fileInfo.type !== "File") {
       return;
     }
@@ -1504,11 +1522,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const runProjectorForEvent = Effect.fn("runProjectorForEvent")(function* (
       projector: ProjectorDefinition,
       event: OrchestrationEvent,
+      options?: {
+        readonly attachmentSideEffects?: AttachmentSideEffects;
+        readonly deferAttachmentSideEffects?: boolean;
+      },
     ) {
-      const attachmentSideEffects: AttachmentSideEffects = {
-        deletedThreadIds: new Set<string>(),
-        prunedThreadRelativePaths: new Map<string, Set<string>>(),
-      };
+      const attachmentSideEffects = options?.attachmentSideEffects ?? makeAttachmentSideEffects();
 
       yield* sql.withTransaction(
         projector.apply(event, attachmentSideEffects).pipe(
@@ -1522,16 +1541,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ),
       );
 
-      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("failed to apply projected attachment side-effects", {
-            projector: projector.name,
-            sequence: event.sequence,
-            eventType: event.type,
-            cause,
-          }),
-        ),
-      );
+      if (!options?.deferAttachmentSideEffects) {
+        yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("failed to apply projected attachment side-effects", {
+              projector: projector.name,
+              sequence: event.sequence,
+              eventType: event.type,
+              cause,
+            }),
+          ),
+        );
+      }
     });
 
     const bootstrapProjector = (projector: ProjectorDefinition) =>
@@ -1544,11 +1565,93 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             Stream.runForEach(
               eventStore.readFromSequence(
                 Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
+                Number.MAX_SAFE_INTEGER,
               ),
-              (event) => runProjectorForEvent(projector, event),
+              (event) =>
+                runProjectorForEvent(projector, event, {
+                  deferAttachmentSideEffects: true,
+                }),
             ),
           ),
         );
+
+    const collectBootstrapAttachmentSideEffects = Effect.fn(
+      "collectBootstrapAttachmentSideEffects",
+    )(function* (sequenceExclusive: number) {
+      const attachmentSideEffects = makeAttachmentSideEffects();
+      let lastAppliedSequence = sequenceExclusive;
+      let updatedAt: OrchestrationEvent["occurredAt"] | null = null;
+      yield* Stream.runForEach(
+        eventStore.readFromSequence(sequenceExclusive, Number.MAX_SAFE_INTEGER),
+        (event) =>
+          Effect.sync(() => {
+            lastAppliedSequence = event.sequence;
+            updatedAt = event.occurredAt;
+            if (event.type === "thread.deleted") {
+              attachmentSideEffects.deletedThreadIds.add(event.payload.threadId);
+            } else if (event.type === "thread.reverted") {
+              attachmentSideEffects.prunedThreadRelativePaths.set(
+                event.payload.threadId,
+                new Set(),
+              );
+            }
+          }),
+      );
+      return { attachmentSideEffects, lastAppliedSequence, updatedAt };
+    });
+
+    const reconcileBootstrapAttachmentSideEffects = Effect.fn(
+      "reconcileBootstrapAttachmentSideEffects",
+    )(function* (pendingSideEffects: AttachmentSideEffects) {
+      const affectedThreadIds = new Set([
+        ...pendingSideEffects.deletedThreadIds,
+        ...pendingSideEffects.prunedThreadRelativePaths.keys(),
+      ]);
+      const reconciledSideEffects = makeAttachmentSideEffects();
+
+      yield* Effect.forEach(
+        [...affectedThreadIds].toSorted(),
+        (threadId) =>
+          Effect.gen(function* () {
+            const thread = yield* projectionThreadRepository.getById({
+              threadId: ThreadId.make(threadId),
+            });
+            if (Option.isNone(thread) || thread.value.deletedAt !== null) {
+              reconciledSideEffects.deletedThreadIds.add(threadId);
+              return;
+            }
+
+            const messages = yield* projectionThreadMessageRepository.listByThreadId({
+              threadId: ThreadId.make(threadId),
+            });
+            reconciledSideEffects.prunedThreadRelativePaths.set(
+              threadId,
+              collectThreadAttachmentRelativePaths(threadId, messages),
+            );
+          }),
+        { concurrency: 1 },
+      );
+
+      return yield* runAttachmentSideEffects(reconciledSideEffects).pipe(
+        Effect.as(true),
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to reconcile bootstrapped attachment side-effects", {
+            affectedThreadCount: affectedThreadIds.size,
+            cause,
+          }).pipe(Effect.as(false)),
+        ),
+      );
+    });
+
+    const refreshAllLatestUserMessageTimes = sql`
+      UPDATE projection_threads
+      SET latest_user_message_at = (
+        SELECT MAX(message.created_at)
+        FROM projection_thread_messages AS message
+        WHERE message.thread_id = projection_threads.thread_id
+          AND message.role = 'user'
+      )
+    `;
 
     const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
       Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
@@ -1563,11 +1666,28 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ),
       );
 
-    const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.forEach(
-      projectors,
-      bootstrapProjector,
-      { concurrency: 1 },
-    ).pipe(
+    const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.gen(function* () {
+      yield* Effect.forEach(projectors, bootstrapProjector, { concurrency: 1 });
+      const attachmentState = yield* projectionStateRepository.getByProjector({
+        projector: ORCHESTRATION_PROJECTOR_NAMES.attachmentSideEffects,
+      });
+      const attachmentSequence = Option.isSome(attachmentState)
+        ? attachmentState.value.lastAppliedSequence
+        : 0;
+      const pendingAttachments = yield* collectBootstrapAttachmentSideEffects(attachmentSequence);
+      if (
+        pendingAttachments.updatedAt !== null &&
+        pendingAttachments.lastAppliedSequence > attachmentSequence &&
+        (yield* reconcileBootstrapAttachmentSideEffects(pendingAttachments.attachmentSideEffects))
+      ) {
+        yield* projectionStateRepository.upsert({
+          projector: ORCHESTRATION_PROJECTOR_NAMES.attachmentSideEffects,
+          lastAppliedSequence: pendingAttachments.lastAppliedSequence,
+          updatedAt: pendingAttachments.updatedAt,
+        });
+      }
+      yield* refreshAllLatestUserMessageTimes;
+    }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig, serverConfig),
