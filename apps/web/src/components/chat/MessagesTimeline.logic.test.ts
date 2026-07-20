@@ -541,6 +541,149 @@ describe("deriveMessagesTimelineRows", () => {
     ).toBeDefined();
   });
 
+  it("expands completed turns by default while honoring explicit collapses", () => {
+    const timelineEntries = [
+      {
+        id: "user-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+        message: {
+          id: "user-1" as never,
+          role: "user" as const,
+          text: "Inspect it",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "work-entry",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:05Z",
+        entry: {
+          id: "work-1",
+          createdAt: "2026-01-01T00:00:05Z",
+          turnId: "turn-1" as never,
+          label: "Ran command",
+          tone: "tool" as const,
+        },
+      },
+      {
+        id: "assistant-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:10Z",
+        message: {
+          id: "assistant-1" as never,
+          role: "assistant" as const,
+          text: "Done",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:10Z",
+          updatedAt: "2026-01-01T00:00:11Z",
+          streaming: false,
+        },
+      },
+    ];
+    const baseInput = {
+      timelineEntries,
+      defaultExpandCompletedTurns: true,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    };
+
+    const expandedRows = deriveMessagesTimelineRows(baseInput);
+    const collapsedRows = deriveMessagesTimelineRows({
+      ...baseInput,
+      collapsedTurnIds: new Set(["turn-1" as never]),
+    });
+
+    expect(expandedRows.map((row) => row.id)).toEqual([
+      "user-entry",
+      "turn-fold:turn-1",
+      "work-entry",
+      "assistant-entry",
+    ]);
+    expect(expandedRows.find((row) => row.kind === "turn-fold")).toMatchObject({
+      expanded: true,
+    });
+    expect(collapsedRows.map((row) => row.id)).toEqual([
+      "user-entry",
+      "turn-fold:turn-1",
+      "assistant-entry",
+    ]);
+    expect(collapsedRows.find((row) => row.kind === "turn-fold")).toMatchObject({
+      expanded: false,
+    });
+  });
+
+  it("keeps the previous completed turn folded while a new send is pending", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "user-1" as never,
+            role: "user",
+            text: "Keep working",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "work-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "work-1",
+            createdAt: "2026-01-01T00:00:05Z",
+            turnId: "turn-1" as never,
+            label: "Ran command",
+            tone: "tool",
+          },
+        },
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:10Z",
+          message: {
+            id: "assistant-1" as never,
+            role: "assistant",
+            text: "Still investigating.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:10Z",
+            updatedAt: "2026-01-01T00:00:11Z",
+            streaming: false,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: "2026-01-01T00:00:11Z",
+      },
+      runningTurnId: null,
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.some((row) => row.kind === "turn-fold")).toBe(true);
+    expect(rows.map((row) => row.id)).toEqual([
+      "user-entry",
+      "turn-fold:turn-1",
+      "assistant-entry",
+      "working-indicator-row",
+    ]);
+  });
+
   it("derives a sane duration for a steer-superseded turn with one instant commentary message", () => {
     // A steer ends the previous turn early: its only message completes the
     // instant it is created, and trailing work entries land after it. The

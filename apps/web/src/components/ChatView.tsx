@@ -5353,6 +5353,7 @@ function ChatViewContent(props: ChatViewProps) {
                     listRef={legendListRef}
                     timelineEntries={timelineEntries}
                     latestTurn={activeLatestTurn}
+                    defaultExpandCompletedTurns={isHerdrThread}
                     runningTurnId={
                       activeThread.session?.status === "running"
                         ? activeThread.session.activeTurnId

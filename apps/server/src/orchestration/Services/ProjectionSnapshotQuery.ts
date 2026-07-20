@@ -150,6 +150,7 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly getThreadShellById: (
     threadId: ThreadId,
+    options?: { readonly includeArchived?: boolean },
   ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, ProjectionRepositoryError>;
 
   /**
@@ -157,6 +158,7 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly getThreadDetailById: (
     threadId: ThreadId,
+    options?: { readonly includeArchived?: boolean },
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
 
   /**

@@ -79,7 +79,11 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           worktree_path = excluded.worktree_path,
           latest_turn_id = excluded.latest_turn_id,
           created_at = excluded.created_at,
-          updated_at = excluded.updated_at,
+          updated_at = CASE
+            WHEN julianday(excluded.updated_at) > julianday(projection_threads.updated_at)
+              THEN excluded.updated_at
+            ELSE projection_threads.updated_at
+          END,
           archived_at = excluded.archived_at,
           latest_user_message_at = excluded.latest_user_message_at,
           pending_approval_count = excluded.pending_approval_count,

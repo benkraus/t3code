@@ -17,6 +17,7 @@ import {
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Option from "effect/Option";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
@@ -38,6 +39,11 @@ export const ListProjectionThreadActivitiesInput = Schema.Struct({
 });
 export type ListProjectionThreadActivitiesInput = typeof ListProjectionThreadActivitiesInput.Type;
 
+export const GetProjectionThreadActivityInput = Schema.Struct({
+  activityId: EventId,
+});
+export type GetProjectionThreadActivityInput = typeof GetProjectionThreadActivityInput.Type;
+
 export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -56,6 +62,11 @@ export interface ProjectionThreadActivityRepositoryShape {
   readonly upsert: (
     row: ProjectionThreadActivity,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /** Looks up one activity by its canonical runtime event id. */
+  readonly getByActivityId: (
+    input: GetProjectionThreadActivityInput,
+  ) => Effect.Effect<Option.Option<ProjectionThreadActivity>, ProjectionRepositoryError>;
 
   /**
    * List projected thread activity rows for a thread.

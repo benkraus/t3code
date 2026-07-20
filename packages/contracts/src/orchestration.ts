@@ -727,11 +727,19 @@ export const ClientOrchestrationCommand = Schema.Union([
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
+const ThreadTurnTiming = Schema.Struct({
+  turnId: TurnId,
+  startedAt: Schema.optional(IsoDateTime),
+  completedAt: Schema.optional(IsoDateTime),
+  state: Schema.optional(Schema.Literals(["completed", "interrupted", "error"])),
+});
+
 const ThreadSessionSetCommand = Schema.Struct({
   type: Schema.Literal("thread.session.set"),
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  turnTiming: Schema.optional(ThreadTurnTiming),
   createdAt: IsoDateTime,
 });
 
@@ -752,6 +760,7 @@ const ThreadMessageUserImportCommand = Schema.Struct({
   messageId: MessageId,
   text: Schema.String,
   turnId: Schema.optional(TurnId),
+  replaceCreatedAt: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -760,7 +769,9 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
+  text: Schema.optional(Schema.String),
   turnId: Schema.optional(TurnId),
+  replaceCreatedAt: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -939,6 +950,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
+  replaceCreatedAt: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -995,6 +1007,7 @@ export const ThreadSessionStopRequestedPayload = Schema.Struct({
 export const ThreadSessionSetPayload = Schema.Struct({
   threadId: ThreadId,
   session: OrchestrationSession,
+  turnTiming: Schema.optional(ThreadTurnTiming),
 });
 
 export const ThreadProposedPlanUpsertedPayload = Schema.Struct({

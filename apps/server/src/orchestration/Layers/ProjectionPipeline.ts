@@ -12,6 +12,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { isExternalHerdrTurnReopen, maxIsoDateTime } from "@t3tools/shared/orchestrationTiming";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
@@ -581,11 +582,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
       let latestUserMessageAt: string | null = null;
       for (const message of messages) {
-        if (
-          message.role === "user" &&
-          (latestUserMessageAt === null || message.createdAt > latestUserMessageAt)
-        ) {
-          latestUserMessageAt = message.createdAt;
+        if (message.role === "user") {
+          latestUserMessageAt =
+            latestUserMessageAt === null
+              ? message.createdAt
+              : maxIsoDateTime(latestUserMessageAt, message.createdAt);
         }
       }
 
@@ -762,7 +763,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            latestTurnId: event.payload.session.activeTurnId,
+            latestTurnId:
+              event.payload.session.activeTurnId ??
+              existingRow.value.latestTurnId ??
+              event.payload.turnTiming?.turnId ??
+              null,
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
@@ -863,7 +868,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             text: nextText,
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
             isStreaming: event.payload.streaming,
-            createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
+            createdAt: event.payload.replaceCreatedAt
+              ? event.payload.createdAt
+              : (previousMessage?.createdAt ?? event.payload.createdAt),
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -1044,6 +1051,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.session-set": {
+          if (event.payload.turnTiming !== undefined) {
+            const timedTurn = yield* projectionTurnRepository.getByTurnId({
+              threadId: event.payload.threadId,
+              turnId: event.payload.turnTiming.turnId,
+            });
+            if (Option.isSome(timedTurn)) {
+              yield* projectionTurnRepository.upsertByTurnId({
+                ...timedTurn.value,
+                startedAt: event.payload.turnTiming.startedAt ?? timedTurn.value.startedAt,
+                completedAt: event.payload.turnTiming.completedAt ?? timedTurn.value.completedAt,
+                state: event.payload.turnTiming.state ?? timedTurn.value.state,
+              });
+            }
+          }
           const turnId = event.payload.session.activeTurnId;
           if (turnId === null || event.payload.session.status !== "running") {
             // Leaving the "running" session status is the turn-end signal:
@@ -1105,13 +1126,32 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
           });
           if (Option.isSome(existingTurn)) {
-            const nextState =
-              existingTurn.value.state === "completed" || existingTurn.value.state === "error"
+            const reopensExternalHerdrTurn = isExternalHerdrTurnReopen({
+              providerName: event.payload.session.providerName,
+              sessionStatus: event.payload.session.status,
+              activeTurnId: turnId,
+              currentTurn: existingTurn.value,
+              ...(event.payload.turnTiming !== undefined
+                ? { turnTiming: event.payload.turnTiming }
+                : {}),
+            });
+            const nextState = reopensExternalHerdrTurn
+              ? "running"
+              : existingTurn.value.state === "completed" || existingTurn.value.state === "error"
                 ? existingTurn.value.state
                 : "running";
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
               state: nextState,
+              completedAt: reopensExternalHerdrTurn ? null : existingTurn.value.completedAt,
+              checkpointTurnCount: reopensExternalHerdrTurn
+                ? null
+                : existingTurn.value.checkpointTurnCount,
+              checkpointRef: reopensExternalHerdrTurn ? null : existingTurn.value.checkpointRef,
+              checkpointStatus: reopensExternalHerdrTurn
+                ? null
+                : existingTurn.value.checkpointStatus,
+              checkpointFiles: reopensExternalHerdrTurn ? [] : existingTurn.value.checkpointFiles,
               pendingMessageId:
                 existingTurn.value.pendingMessageId ??
                 (Option.isSome(pendingTurnStart) ? pendingTurnStart.value.messageId : null),
@@ -1126,7 +1166,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   ? pendingTurnStart.value.sourceProposedPlanId
                   : null),
               startedAt:
-                existingTurn.value.startedAt ??
+                (event.payload.turnTiming?.turnId === turnId
+                  ? event.payload.turnTiming.startedAt
+                  : existingTurn.value.startedAt) ??
                 (Option.isSome(pendingTurnStart)
                   ? pendingTurnStart.value.requestedAt
                   : event.occurredAt),
@@ -1154,9 +1196,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               requestedAt: Option.isSome(pendingTurnStart)
                 ? pendingTurnStart.value.requestedAt
                 : event.occurredAt,
-              startedAt: Option.isSome(pendingTurnStart)
-                ? pendingTurnStart.value.requestedAt
-                : event.occurredAt,
+              startedAt:
+                event.payload.turnTiming?.turnId === turnId &&
+                event.payload.turnTiming.startedAt !== undefined
+                  ? event.payload.turnTiming.startedAt
+                  : Option.isSome(pendingTurnStart)
+                    ? pendingTurnStart.value.requestedAt
+                    : event.occurredAt,
               completedAt: null,
               checkpointTurnCount: null,
               checkpointRef: null,
@@ -1646,10 +1692,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const refreshAllLatestUserMessageTimes = sql`
       UPDATE projection_threads
       SET latest_user_message_at = (
-        SELECT MAX(message.created_at)
+        SELECT message.created_at
         FROM projection_thread_messages AS message
         WHERE message.thread_id = projection_threads.thread_id
           AND message.role = 'user'
+        ORDER BY julianday(message.created_at) DESC, message.created_at DESC
+        LIMIT 1
       )
     `;
 

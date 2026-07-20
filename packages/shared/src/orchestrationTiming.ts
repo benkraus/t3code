@@ -9,6 +9,40 @@ type SessionActivityState = {
   readonly activeTurnId?: string | null;
 };
 
+type ExternalTurnReopenInput = {
+  readonly providerName: string | null;
+  readonly sessionStatus: string;
+  readonly activeTurnId: string | null;
+  readonly currentTurn: {
+    readonly turnId: string | null;
+    readonly state: string;
+  } | null;
+  readonly turnTiming?: {
+    readonly turnId: string;
+    readonly startedAt?: string | undefined;
+  };
+};
+
+export function maxIsoDateTime(left: string, right: string): string {
+  const leftMs = Date.parse(left);
+  const rightMs = Date.parse(right);
+  if (Number.isNaN(leftMs)) return right;
+  if (Number.isNaN(rightMs)) return left;
+  return leftMs >= rightMs ? left : right;
+}
+
+export function isExternalHerdrTurnReopen(input: ExternalTurnReopenInput): boolean {
+  return (
+    input.providerName === "herdr" &&
+    input.sessionStatus === "running" &&
+    input.activeTurnId !== null &&
+    input.currentTurn?.turnId === input.activeTurnId &&
+    input.currentTurn.state !== "running" &&
+    input.turnTiming?.turnId === input.activeTurnId &&
+    input.turnTiming.startedAt !== undefined
+  );
+}
+
 export function formatDuration(durationMs: number): string {
   if (!Number.isFinite(durationMs) || durationMs < 0) return "0ms";
   if (durationMs < 1_000) return `${Math.max(1, Math.round(durationMs))}ms`;

@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { isExternalHerdrTurnReopen, maxIsoDateTime } from "@t3tools/shared/orchestrationTiming";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
@@ -66,7 +67,17 @@ function updateThread(
   threadId: ThreadId,
   patch: ThreadPatch,
 ): OrchestrationThread[] {
-  return threads.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread));
+  return threads.map((thread) =>
+    thread.id === threadId
+      ? {
+          ...thread,
+          ...patch,
+          ...(patch.updatedAt !== undefined
+            ? { updatedAt: maxIsoDateTime(thread.updatedAt, patch.updatedAt) }
+            : {}),
+        }
+      : thread,
+  );
 }
 
 function decodeForEvent<A>(
@@ -194,7 +205,7 @@ export function projectEvent(
   const nextBase: OrchestrationReadModel = {
     ...model,
     snapshotSequence: event.sequence,
-    updatedAt: event.occurredAt,
+    updatedAt: maxIsoDateTime(model.updatedAt, event.occurredAt),
   };
 
   switch (event.type) {
@@ -422,6 +433,7 @@ export function projectEvent(
                         ? message.text
                         : entry.text,
                     streaming: message.streaming,
+                    createdAt: payload.replaceCreatedAt ? message.createdAt : entry.createdAt,
                     updatedAt: message.updatedAt,
                     turnId: message.turnId,
                     ...(message.attachments !== undefined
@@ -461,6 +473,29 @@ export function projectEvent(
           event.type,
           "session",
         );
+        const latestTurn =
+          payload.turnTiming !== undefined &&
+          thread.latestTurn?.turnId === payload.turnTiming.turnId
+            ? {
+                ...thread.latestTurn,
+                ...(payload.turnTiming.startedAt !== undefined
+                  ? { startedAt: payload.turnTiming.startedAt }
+                  : {}),
+                ...(payload.turnTiming.completedAt !== undefined
+                  ? { completedAt: payload.turnTiming.completedAt }
+                  : {}),
+                ...(payload.turnTiming.state !== undefined
+                  ? { state: payload.turnTiming.state }
+                  : {}),
+              }
+            : thread.latestTurn;
+        const reopensExternalHerdrTurn = isExternalHerdrTurnReopen({
+          providerName: session.providerName,
+          sessionStatus: session.status,
+          activeTurnId: session.activeTurnId,
+          currentTurn: thread.latestTurn,
+          ...(payload.turnTiming !== undefined ? { turnTiming: payload.turnTiming } : {}),
+        });
 
         // Leaving the "running" session status is the turn-end signal: settle
         // a still-running latest turn so its duration reflects the whole turn.
@@ -469,37 +504,40 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             session,
+            checkpoints: reopensExternalHerdrTurn
+              ? thread.checkpoints.filter(
+                  (checkpoint) => checkpoint.turnId !== session.activeTurnId,
+                )
+              : thread.checkpoints,
             latestTurn:
               session.status === "running" && session.activeTurnId !== null
                 ? {
                     turnId: session.activeTurnId,
                     state: "running",
                     requestedAt:
-                      thread.latestTurn?.turnId === session.activeTurnId
-                        ? thread.latestTurn.requestedAt
+                      latestTurn?.turnId === session.activeTurnId
+                        ? latestTurn.requestedAt
                         : session.updatedAt,
                     startedAt:
-                      thread.latestTurn?.turnId === session.activeTurnId
-                        ? (thread.latestTurn.startedAt ?? session.updatedAt)
+                      latestTurn?.turnId === session.activeTurnId
+                        ? (latestTurn.startedAt ?? session.updatedAt)
                         : session.updatedAt,
                     completedAt: null,
                     assistantMessageId:
-                      thread.latestTurn?.turnId === session.activeTurnId
-                        ? thread.latestTurn.assistantMessageId
+                      latestTurn?.turnId === session.activeTurnId
+                        ? latestTurn.assistantMessageId
                         : null,
                   }
-                : thread.latestTurn !== null &&
-                    thread.latestTurn.state === "running" &&
-                    settledTurnState !== null
+                : latestTurn !== null && latestTurn.state === "running" && settledTurnState !== null
                   ? {
-                      ...thread.latestTurn,
+                      ...latestTurn,
                       state: settledTurnState,
                       // A running turn's completedAt can only hold a mid-turn
                       // placeholder checkpoint timestamp — the session leaving
                       // "running" is the authoritative turn end.
                       completedAt: session.updatedAt,
                     }
-                  : thread.latestTurn,
+                  : latestTurn,
             updatedAt: event.occurredAt,
           }),
         };

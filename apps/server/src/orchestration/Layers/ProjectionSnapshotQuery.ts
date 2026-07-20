@@ -33,6 +33,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
+import { maxIsoDateTime } from "@t3tools/shared/orchestrationTiming";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
@@ -155,7 +156,7 @@ function maxIso(left: string | null, right: string): string {
   if (left === null) {
     return right;
   }
-  return left > right ? left : right;
+  return maxIsoDateTime(left, right);
 }
 
 function computeSnapshotSequence(
@@ -764,6 +765,36 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE thread_id = ${threadId}
           AND deleted_at IS NULL
           AND archived_at IS NULL
+        LIMIT 1
+      `,
+  });
+
+  const getNonDeletedThreadRowById = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          project_id AS "projectId",
+          title,
+          model_selection_json AS "modelSelection",
+          runtime_mode AS "runtimeMode",
+          interaction_mode AS "interactionMode",
+          branch,
+          worktree_path AS "worktreePath",
+          latest_turn_id AS "latestTurnId",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          archived_at AS "archivedAt",
+          latest_user_message_at AS "latestUserMessageAt",
+          pending_approval_count AS "pendingApprovalCount",
+          pending_user_input_count AS "pendingUserInputCount",
+          has_actionable_proposed_plan AS "hasActionableProposedPlan",
+          deleted_at AS "deletedAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+          AND deleted_at IS NULL
         LIMIT 1
       `,
   });
@@ -1844,10 +1875,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       });
     });
 
-  const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
+  const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (
+    threadId,
+    options,
+  ) =>
     Effect.gen(function* () {
       const [threadRow, latestTurnRow, sessionRow] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
+        (options?.includeArchived ? getNonDeletedThreadRowById : getActiveThreadRowById)({
+          threadId,
+        }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadShellById:getThread:query",
@@ -1898,7 +1934,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       } satisfies OrchestrationThreadShell);
     });
 
-  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
+  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (
+    threadId,
+    options,
+  ) =>
     Effect.gen(function* () {
       const [
         threadRow,
@@ -1909,7 +1948,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         latestTurnRow,
         sessionRow,
       ] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
+        (options?.includeArchived ? getNonDeletedThreadRowById : getActiveThreadRowById)({
+          threadId,
+        }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:getThread:query",

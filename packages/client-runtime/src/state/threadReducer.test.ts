@@ -261,6 +261,78 @@ describe("applyThreadDetailEvent", () => {
       }
     });
 
+    it("keeps thread freshness monotonic while repairing a message timestamp", () => {
+      const threadWithMessage: OrchestrationThread = {
+        ...baseThread,
+        updatedAt: "2026-04-01T08:00:00.000Z",
+        messages: [
+          {
+            id: MessageId.make("msg-repair"),
+            role: "assistant",
+            text: "Stable response.",
+            turnId: TurnId.make("turn-repair"),
+            streaming: false,
+            createdAt: "2026-04-01T07:00:10.000Z",
+            updatedAt: "2026-04-01T07:00:10.000Z",
+          },
+        ],
+      };
+      const result = applyThreadDetailEvent(threadWithMessage, {
+        ...baseEventFields,
+        sequence: 8,
+        occurredAt: "2026-04-01T07:00:01.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-sent",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("msg-repair"),
+          role: "assistant",
+          text: "Stable response.",
+          turnId: TurnId.make("turn-repair"),
+          streaming: false,
+          replaceCreatedAt: true,
+          createdAt: "2026-04-01T07:00:01.000Z",
+          updatedAt: "2026-04-01T07:00:01.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages[0]?.createdAt).toBe("2026-04-01T07:00:01.000Z");
+        expect(result.thread.updatedAt).toBe("2026-04-01T08:00:00.000Z");
+      }
+    });
+
+    it("compares thread freshness by instant across ISO offsets", () => {
+      const result = applyThreadDetailEvent(
+        { ...baseThread, updatedAt: "2026-04-01T10:00:00+05:00" },
+        {
+          ...baseEventFields,
+          sequence: 9,
+          occurredAt: "2026-04-01T06:00:00Z",
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          type: "thread.message-sent",
+          payload: {
+            threadId: ThreadId.make("thread-1"),
+            messageId: MessageId.make("msg-offset"),
+            role: "user",
+            text: "Later instant",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-04-01T06:00:00Z",
+            updatedAt: "2026-04-01T06:00:00Z",
+          },
+        },
+      );
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.updatedAt).toBe("2026-04-01T06:00:00Z");
+      }
+    });
+
     it("updates latestTurn for assistant messages with a turn", () => {
       const result = applyThreadDetailEvent(baseThread, {
         ...baseEventFields,
@@ -336,6 +408,55 @@ describe("applyThreadDetailEvent", () => {
         expect(result.thread.latestTurn?.completedAt).toBeNull();
       }
     });
+
+    it("preserves terminal lifecycle timing for a later assistant snapshot update", () => {
+      const threadWithCompletedTurn: OrchestrationThread = {
+        ...baseThread,
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "herdr",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-04-01T08:00:00.000Z",
+        },
+        latestTurn: {
+          turnId: TurnId.make("turn-1"),
+          state: "completed",
+          requestedAt: "2026-04-01T07:00:00.000Z",
+          startedAt: "2026-04-01T07:00:00.000Z",
+          completedAt: "2026-04-01T08:00:00.000Z",
+          assistantMessageId: MessageId.make("msg-3"),
+        },
+      };
+      const result = applyThreadDetailEvent(threadWithCompletedTurn, {
+        ...baseEventFields,
+        sequence: 9,
+        occurredAt: "2026-04-01T07:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-sent",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("msg-3"),
+          role: "assistant",
+          text: "Repaired snapshot text.",
+          turnId: TurnId.make("turn-1"),
+          streaming: false,
+          createdAt: "2026-04-01T07:00:00.000Z",
+          updatedAt: "2026-04-01T07:00:00.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.latestTurn).toMatchObject({
+          state: "completed",
+          completedAt: "2026-04-01T08:00:00.000Z",
+        });
+      }
+    });
   });
 
   describe("thread.session-set", () => {
@@ -407,6 +528,111 @@ describe("applyThreadDetailEvent", () => {
         expect(result.thread.session?.status).toBe("running");
         expect(result.thread.latestTurn?.turnId).toBe("turn-1");
         expect(result.thread.latestTurn?.state).toBe("running");
+      }
+    });
+
+    it("applies authoritative timing repairs to the matching latest turn", () => {
+      const threadWithCompletedTurn: OrchestrationThread = {
+        ...baseThread,
+        latestTurn: {
+          turnId: TurnId.make("turn-1"),
+          state: "completed",
+          requestedAt: "2026-04-01T07:00:00.000Z",
+          startedAt: "2026-04-01T07:00:00.000Z",
+          completedAt: "2026-04-01T08:00:00.000Z",
+          assistantMessageId: MessageId.make("msg-3"),
+        },
+      };
+      const result = applyThreadDetailEvent(threadWithCompletedTurn, {
+        ...baseEventFields,
+        sequence: 10,
+        occurredAt: "2026-04-01T08:01:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.session-set",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "ready",
+            providerName: "herdr",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-04-01T08:00:00.000Z",
+          },
+          turnTiming: {
+            turnId: TurnId.make("turn-1"),
+            startedAt: "2026-04-01T06:59:30.000Z",
+            completedAt: "2026-04-01T07:59:30.000Z",
+            state: "interrupted",
+          },
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.latestTurn).toMatchObject({
+          turnId: "turn-1",
+          state: "interrupted",
+          startedAt: "2026-04-01T06:59:30.000Z",
+          completedAt: "2026-04-01T07:59:30.000Z",
+        });
+      }
+    });
+
+    it("removes a settled turn checkpoint when HerdR reopens the turn", () => {
+      const threadWithCompletedTurn: OrchestrationThread = {
+        ...baseThread,
+        latestTurn: {
+          turnId: TurnId.make("turn-1"),
+          state: "completed",
+          requestedAt: "2026-04-01T07:00:00.000Z",
+          startedAt: "2026-04-01T07:00:00.000Z",
+          completedAt: "2026-04-01T08:00:00.000Z",
+          assistantMessageId: MessageId.make("msg-3"),
+        },
+        checkpoints: [
+          {
+            turnId: TurnId.make("turn-1"),
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("ref-1"),
+            status: "ready",
+            files: [],
+            assistantMessageId: MessageId.make("msg-3"),
+            completedAt: "2026-04-01T08:00:00.000Z",
+          },
+        ],
+      };
+      const result = applyThreadDetailEvent(threadWithCompletedTurn, {
+        ...baseEventFields,
+        sequence: 11,
+        occurredAt: "2026-04-01T08:01:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.session-set",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "herdr",
+            runtimeMode: "full-access",
+            activeTurnId: TurnId.make("turn-1"),
+            lastError: null,
+            updatedAt: "2026-04-01T08:01:00.000Z",
+          },
+          turnTiming: {
+            turnId: TurnId.make("turn-1"),
+            startedAt: "2026-04-01T07:00:00.000Z",
+          },
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.latestTurn?.state).toBe("running");
+        expect(result.thread.checkpoints).toEqual([]);
       }
     });
   });

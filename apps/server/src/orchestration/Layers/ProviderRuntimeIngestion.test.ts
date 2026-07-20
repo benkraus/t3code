@@ -18,6 +18,7 @@ import {
   MessageId,
   ProjectId,
   ProviderItemId,
+  RuntimeItemId,
   type ServerSettings,
   ThreadId,
   TurnId,
@@ -27,12 +28,15 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
+import { ProviderRuntimeEventReceiptRepositoryLive } from "../../persistence/Layers/ProviderRuntimeEventReceipts.ts";
+import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import {
@@ -47,9 +51,12 @@ import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { ProviderRuntimeEventReceiptRepository } from "../../persistence/Services/ProviderRuntimeEventReceipts.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { runtimeEventFingerprint } from "../../herdr/codexTranscript.ts";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -191,7 +198,11 @@ async function waitForThread(
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderRuntimeIngestionService
+    | ProjectionSnapshotQuery
+    | ProjectionTurnRepository
+    | ProviderRuntimeEventReceiptRepository,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -237,6 +248,10 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(
+        ProviderRuntimeEventReceiptRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+      ),
+      Layer.provideMerge(ProjectionTurnRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory))),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
@@ -246,9 +261,14 @@ describe("ProviderRuntimeIngestion", () => {
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+    const runtimeEventReceipts = await runtime.runPromise(
+      Effect.service(ProviderRuntimeEventReceiptRepository),
+    );
+    const projectionTurns = await runtime.runPromise(Effect.service(ProjectionTurnRepository));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
+    const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
 
     const createdAt = "2026-01-01T00:00:00.000Z";
     await Effect.runPromise(
@@ -314,6 +334,9 @@ describe("ProviderRuntimeIngestion", () => {
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       emit: provider.emit,
       setProviderSession: provider.setSession,
+      runtimeEventReceipts,
+      projectionTurns,
+      run,
       drain,
     };
   }
@@ -751,6 +774,690 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("deduplicates exact HerdR snapshot event replays across ingestion", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const event = {
+      type: "item.completed" as const,
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-replay:item:item-replay"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-replay"),
+      itemId: RuntimeItemId.make("item-replay"),
+      payload: {
+        itemType: "assistant_message" as const,
+        status: "completed" as const,
+        detail: "Imported once.",
+      },
+    };
+
+    harness.emit(event);
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some((message) => message.id === "assistant:item-replay"),
+    );
+    harness.emit(event);
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.filter((message) => message.id === "assistant:item-replay"),
+    ).toHaveLength(1);
+    const receipt = await harness.run(
+      harness.runtimeEventReceipts.get({ provider: event.provider, eventId: event.eventId }),
+    );
+    expect(Option.isSome(receipt) ? receipt.value.fingerprint : null).toBe(
+      runtimeEventFingerprint(event),
+    );
+    const threadReceipts = await harness.run(
+      harness.runtimeEventReceipts.listByEventIdPrefix({
+        provider: event.provider,
+        eventIdPrefix: "herdr-codex:thread-1:session-1:",
+      }),
+    );
+    expect(threadReceipts.map((entry) => entry.eventId)).toEqual([event.eventId]);
+  });
+
+  it("imports a newly discovered HerdR transcript when the driver retries after projection", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-delayed-projection");
+    const event = {
+      type: "item.completed" as const,
+      eventId: asEventId("herdr-codex:thread-delayed-projection:session-1:turn-1:item:item-1"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-07-19T00:00:00.000Z",
+      threadId,
+      turnId: asTurnId("turn-1"),
+      itemId: RuntimeItemId.make("item-1"),
+      payload: {
+        itemType: "assistant_message" as const,
+        status: "completed" as const,
+        detail: "Imported after projection creation.",
+      },
+    };
+
+    harness.emit(event);
+    await Effect.runPromise(Effect.sleep("100 millis"));
+    await harness.run(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-delayed-projection-thread-create"),
+        threadId,
+        projectId: asProjectId("project-1"),
+        title: "Delayed projection",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("herdr"),
+          model: "herdr-managed",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-07-19T00:00:00.100Z",
+      }),
+    );
+    harness.emit(event);
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.messages.some(
+          (message) =>
+            message.id === "assistant:item-1" &&
+            message.text === "Imported after projection creation.",
+        ),
+      2_000,
+      threadId,
+    );
+    expect(thread.messages.filter((message) => message.id === "assistant:item-1")).toHaveLength(1);
+  });
+
+  it("promotes a legacy null HerdR receipt after confirming its projection", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const event = {
+      type: "item.completed" as const,
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-legacy:item:item-legacy"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-legacy"),
+      itemId: RuntimeItemId.make("item-legacy"),
+      payload: {
+        itemType: "assistant_message" as const,
+        status: "completed" as const,
+        detail: "Already imported.",
+      },
+    };
+
+    harness.emit(event);
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some((message) => message.id === "assistant:item-legacy"),
+    );
+    await harness.run(
+      harness.runtimeEventReceipts.upsert({
+        provider: event.provider,
+        eventId: event.eventId,
+        fingerprint: null,
+        processedAt: now,
+      }),
+    );
+
+    harness.emit(event);
+    await harness.drain();
+
+    const receipt = await harness.run(
+      harness.runtimeEventReceipts.get({ provider: event.provider, eventId: event.eventId }),
+    );
+    expect(Option.isSome(receipt) ? receipt.value.fingerprint : null).toBe(
+      runtimeEventFingerprint(event),
+    );
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.messages.filter((message) => message.id === "assistant:item-legacy"),
+    ).toHaveLength(1);
+  });
+
+  it("replaces assistant text when a stable HerdR snapshot item grows", async () => {
+    const harness = await createHarness();
+    const event = {
+      type: "item.completed" as const,
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-growing:item:item-growing"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-growing"),
+      itemId: RuntimeItemId.make("item-growing"),
+      payload: {
+        itemType: "assistant_message" as const,
+        status: "completed" as const,
+        detail: "Initial snapshot.",
+      },
+    };
+
+    harness.emit(event);
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message) =>
+          message.id === "assistant:item-growing" && message.text === "Initial snapshot.",
+      ),
+    );
+
+    const completedEvent = {
+      ...event,
+      createdAt: "2026-01-01T00:00:05.000Z",
+      payload: { ...event.payload, detail: "Initial snapshot. Final answer." },
+    };
+    harness.emit(completedEvent);
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message) =>
+          message.id === "assistant:item-growing" &&
+          message.text === "Initial snapshot. Final answer.",
+      ),
+    );
+    expect(
+      thread.messages.filter((message) => message.id === "assistant:item-growing"),
+    ).toHaveLength(1);
+    const receipt = await harness.run(
+      harness.runtimeEventReceipts.get({
+        provider: completedEvent.provider,
+        eventId: completedEvent.eventId,
+      }),
+    );
+    expect(Option.isSome(receipt) ? receipt.value.fingerprint : null).toBe(
+      runtimeEventFingerprint(completedEvent),
+    );
+  });
+
+  it("repairs the creation timestamp of a stable HerdR assistant message", async () => {
+    const harness = await createHarness();
+    const event = {
+      type: "item.completed" as const,
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-time:item:assistant-time"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:10.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-time"),
+      itemId: RuntimeItemId.make("assistant-time"),
+      payload: {
+        itemType: "assistant_message" as const,
+        status: "completed" as const,
+        detail: "Stable response.",
+      },
+    };
+    harness.emit(event);
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message) =>
+          message.id === "assistant:assistant-time" && message.createdAt === event.createdAt,
+      ),
+    );
+
+    const repaired = { ...event, createdAt: "2026-01-01T00:00:01.000Z" };
+    harness.emit(repaired);
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message) =>
+          message.id === "assistant:assistant-time" && message.createdAt === repaired.createdAt,
+      ),
+    );
+    expect(
+      thread.messages.filter((message) => message.id === "assistant:assistant-time"),
+    ).toHaveLength(1);
+    expect(thread.updatedAt).toBe(event.createdAt);
+    const receipt = await harness.run(
+      harness.runtimeEventReceipts.get({ provider: repaired.provider, eventId: repaired.eventId }),
+    );
+    expect(Option.isSome(receipt) ? receipt.value.fingerprint : null).toBe(
+      runtimeEventFingerprint(repaired),
+    );
+  });
+
+  it("replays a legacy HerdR turn start when the external session is active", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-external-active");
+    const now = "2026-01-01T00:00:00.000Z";
+    const turnStarted = {
+      type: "turn.started" as const,
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-external-active:turn:started"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    };
+
+    await harness.run(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-herdr-session-active-without-turn"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "running",
+          providerName: "herdr",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.run(
+      harness.runtimeEventReceipts.upsert({
+        provider: turnStarted.provider,
+        eventId: turnStarted.eventId,
+        fingerprint: null,
+        processedAt: now,
+      }),
+    );
+
+    harness.emit(turnStarted);
+
+    const repaired = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running" && entry.session.activeTurnId === turnId,
+    );
+    expect(repaired.latestTurn?.state).toBe("running");
+  });
+
+  it("acknowledges terminal HerdR start replays without reopening the completed turn", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-terminal-replay");
+    const startedAt = "2026-01-01T00:00:01.000Z";
+    const completedAt = "2026-01-01T00:00:02.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("herdr-turn-started:thread-1:turn-terminal-replay"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: startedAt,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("herdr-turn-completed:thread-1:turn-terminal-replay"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: completedAt,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { state: "completed" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "ready" && entry.session.activeTurnId === null,
+    );
+
+    harness.emit({
+      type: "turn.diff.updated",
+      eventId: asEventId("evt-terminal-replay-checkpoint"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: completedAt,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { unifiedDiff: "diff --git a/file.txt b/file.txt\n+persist\n" },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.checkpoints.some((checkpoint) => checkpoint.turnId === turnId),
+    );
+
+    const replay = {
+      type: "turn.started" as const,
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-terminal-replay:turn:started"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:01.500Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+      raw: {
+        source: "codex.app-server.notification" as const,
+        method: "thread/read",
+        payload: {
+          turnId,
+          status: "completed",
+          startedAt: 1_767_225_601.5,
+          completedAt: 1_767_225_602,
+          terminal: true,
+          errorMessage: null,
+        },
+      },
+    };
+    harness.emit(replay);
+    await harness.drain();
+
+    const completionReplay = {
+      type: "turn.completed" as const,
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-terminal-replay:turn:completed"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:02.500Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { state: "completed" as const },
+      raw: {
+        ...replay.raw,
+        payload: {
+          ...replay.raw.payload,
+          completedAt: 1_767_225_602.5,
+        },
+      },
+    };
+    harness.emit(completionReplay);
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.session).toMatchObject({ status: "ready", activeTurnId: null });
+    expect(thread?.latestTurn?.turnId).toBe(turnId);
+    expect(thread?.checkpoints.some((checkpoint) => checkpoint.turnId === turnId)).toBe(true);
+    const projectedTurn = await harness.run(
+      harness.projectionTurns.getByTurnId({ threadId: asThreadId("thread-1"), turnId }),
+    );
+    expect(Option.isSome(projectedTurn) ? projectedTurn.value.startedAt : null).toBe(
+      replay.createdAt,
+    );
+    expect(Option.isSome(projectedTurn) ? projectedTurn.value.completedAt : null).toBe(
+      completionReplay.createdAt,
+    );
+    expect(Option.isSome(projectedTurn) ? projectedTurn.value.state : null).toBe("completed");
+    expect(Option.isSome(projectedTurn) ? projectedTurn.value.checkpointRef : null).toBe(
+      "provider-diff:evt-terminal-replay-checkpoint",
+    );
+    const receipt = await harness.run(
+      harness.runtimeEventReceipts.get({
+        provider: replay.provider,
+        eventId: replay.eventId,
+      }),
+    );
+    expect(Option.isSome(receipt) ? receipt.value.fingerprint : null).toBe(
+      runtimeEventFingerprint(replay),
+    );
+  });
+
+  it("applies a first-seen terminal HerdR start before its fast completion", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-fast-terminal");
+    const start = {
+      type: "turn.started" as const,
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-fast-terminal:turn:started"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+      raw: {
+        source: "codex.app-server.notification" as const,
+        method: "thread/read",
+        payload: {
+          turnId,
+          status: "completed",
+          startedAt: 1_767_225_603,
+          completedAt: 1_767_225_604,
+          terminal: true,
+          errorMessage: null,
+        },
+      },
+    };
+    harness.emit(start);
+
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running" && entry.session.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-fast-terminal:turn:completed"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { state: "completed" },
+      raw: start.raw,
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "ready" && entry.session.activeTurnId === null,
+    );
+    const projectedTurn = await harness.run(
+      harness.projectionTurns.getByTurnId({ threadId: asThreadId("thread-1"), turnId }),
+    );
+    expect(Option.isSome(projectedTurn) ? projectedTurn.value : null).toMatchObject({
+      turnId,
+      state: "completed",
+      startedAt: start.createdAt,
+    });
+  });
+
+  it("preserves checkpoint metadata on duplicate starts for an already-running HerdR turn", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-running-replay");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-running-replay-start"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running" && entry.session.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "turn.diff.updated",
+      eventId: asEventId("evt-running-replay-checkpoint"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { unifiedDiff: "diff --git a/file.txt b/file.txt\n+running\n" },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.checkpoints.some((checkpoint) => checkpoint.turnId === turnId),
+    );
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-running-replay-duplicate-start"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    });
+    await harness.drain();
+
+    const projectedTurn = await harness.run(
+      harness.projectionTurns.getByTurnId({ threadId: asThreadId("thread-1"), turnId }),
+    );
+    expect(Option.isSome(projectedTurn) ? projectedTurn.value : null).toMatchObject({
+      state: "running",
+      checkpointRef: "provider-diff:evt-running-replay-checkpoint",
+      checkpointStatus: "missing",
+    });
+  });
+
+  it("repairs a historical completion while preserving the current active turn", async () => {
+    const harness = await createHarness();
+    const historicalTurnId = asTurnId("turn-historical-completion");
+    const activeTurnId = asTurnId("turn-current-active");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-historical-start"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: historicalTurnId,
+      payload: {},
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-historical-complete"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: historicalTurnId,
+      payload: { state: "completed" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "ready" && entry.session.activeTurnId === null,
+    );
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-current-active-start"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: activeTurnId,
+      payload: {},
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running" && entry.session.activeTurnId === activeTurnId,
+    );
+
+    const repairedCompletion = {
+      type: "turn.completed" as const,
+      eventId: asEventId(
+        "herdr-codex:thread-1:session-1:turn-historical-completion:turn:completed",
+      ),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:02.500Z",
+      threadId: asThreadId("thread-1"),
+      turnId: historicalTurnId,
+      payload: { state: "completed" as const },
+    };
+    harness.emit(repairedCompletion);
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.session).toMatchObject({ status: "running", activeTurnId });
+    const historicalTurn = await harness.run(
+      harness.projectionTurns.getByTurnId({
+        threadId: asThreadId("thread-1"),
+        turnId: historicalTurnId,
+      }),
+    );
+    expect(Option.isSome(historicalTurn) ? historicalTurn.value : null).toMatchObject({
+      state: "completed",
+      completedAt: repairedCompletion.createdAt,
+    });
+    const receipt = await harness.run(
+      harness.runtimeEventReceipts.get({
+        provider: repairedCompletion.provider,
+        eventId: repairedCompletion.eventId,
+      }),
+    );
+    expect(Option.isSome(receipt) ? receipt.value.fingerprint : null).toBe(
+      runtimeEventFingerprint(repairedCompletion),
+    );
+  });
+
+  it("repairs a historical completion while preserving the latest terminal session", async () => {
+    const harness = await createHarness();
+    const historicalTurnId = asTurnId("turn-historical-terminal-repair");
+    const latestTurnId = asTurnId("turn-latest-terminal");
+
+    for (const event of [
+      {
+        type: "turn.started" as const,
+        eventId: asEventId("evt-historical-terminal-start"),
+        provider: ProviderDriverKind.make("herdr"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId: asThreadId("thread-1"),
+        turnId: historicalTurnId,
+        payload: {},
+      },
+      {
+        type: "turn.completed" as const,
+        eventId: asEventId("evt-historical-terminal-complete"),
+        provider: ProviderDriverKind.make("herdr"),
+        createdAt: "2026-01-01T00:00:02.000Z",
+        threadId: asThreadId("thread-1"),
+        turnId: historicalTurnId,
+        payload: { state: "completed" as const },
+      },
+      {
+        type: "turn.started" as const,
+        eventId: asEventId("evt-latest-terminal-start"),
+        provider: ProviderDriverKind.make("herdr"),
+        createdAt: "2026-01-01T00:00:03.000Z",
+        threadId: asThreadId("thread-1"),
+        turnId: latestTurnId,
+        payload: {},
+      },
+      {
+        type: "turn.completed" as const,
+        eventId: asEventId("evt-latest-terminal-complete"),
+        provider: ProviderDriverKind.make("herdr"),
+        createdAt: "2026-01-01T00:00:04.000Z",
+        threadId: asThreadId("thread-1"),
+        turnId: latestTurnId,
+        payload: { state: "failed" as const, errorMessage: "Latest turn failed." },
+      },
+    ]) {
+      harness.emit(event);
+    }
+    await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.status === "error" &&
+        entry.session.activeTurnId === null &&
+        entry.session.lastError === "Latest turn failed.",
+    );
+
+    const repairedCompletion = {
+      type: "turn.completed" as const,
+      eventId: asEventId(
+        "herdr-codex:thread-1:session-1:turn-historical-terminal-repair:turn:completed",
+      ),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:02.500Z",
+      threadId: asThreadId("thread-1"),
+      turnId: historicalTurnId,
+      payload: { state: "completed" as const },
+    };
+    harness.emit(repairedCompletion);
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.session).toMatchObject({
+      status: "error",
+      activeTurnId: null,
+      lastError: "Latest turn failed.",
+    });
+    const historicalTurn = await harness.run(
+      harness.projectionTurns.getByTurnId({
+        threadId: asThreadId("thread-1"),
+        turnId: historicalTurnId,
+      }),
+    );
+    expect(Option.isSome(historicalTurn) ? historicalTurn.value.completedAt : null).toBe(
+      repairedCompletion.createdAt,
+    );
+  });
+
   it("imports persisted provider user messages without starting another turn", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -785,6 +1492,140 @@ describe("ProviderRuntimeIngestion", () => {
       streaming: false,
     });
     expect(thread.latestTurn?.turnId).not.toBe("turn-imported");
+  });
+
+  it("repairs the creation timestamp of a stable HerdR user message", async () => {
+    const harness = await createHarness();
+    const event = {
+      type: "item.completed" as const,
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-user-time:item:user-time"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:10.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-user-time"),
+      itemId: RuntimeItemId.make("user-time"),
+      payload: {
+        itemType: "user_message" as const,
+        status: "completed" as const,
+        detail: "Stable prompt.",
+      },
+    };
+    harness.emit(event);
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message) => message.id === "user:user-time" && message.createdAt === event.createdAt,
+      ),
+    );
+
+    const repaired = { ...event, createdAt: "2026-01-01T00:00:01.000Z" };
+    harness.emit(repaired);
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message) => message.id === "user:user-time" && message.createdAt === repaired.createdAt,
+      ),
+    );
+    expect(thread.messages.filter((message) => message.id === "user:user-time")).toHaveLength(1);
+    expect(thread.updatedAt).toBe(event.createdAt);
+    const receipt = await harness.run(
+      harness.runtimeEventReceipts.get({ provider: repaired.provider, eventId: repaired.eventId }),
+    );
+    expect(Option.isSome(receipt) ? receipt.value.fingerprint : null).toBe(
+      runtimeEventFingerprint(repaired),
+    );
+  });
+
+  it("projects HerdR snapshots while threads are archived", async () => {
+    const harness = await createHarness();
+    await harness.run(
+      harness.engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("cmd-archive-herdr-thread"),
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+    const event = {
+      type: "item.completed" as const,
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-archived:item:assistant-archived"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-archived"),
+      itemId: RuntimeItemId.make("assistant-archived"),
+      payload: {
+        itemType: "assistant_message" as const,
+        status: "completed" as const,
+        detail: "Archived transcript update.",
+      },
+    };
+
+    harness.emit(event);
+    await harness.drain();
+
+    const receipt = await harness.run(
+      harness.runtimeEventReceipts.get({ provider: event.provider, eventId: event.eventId }),
+    );
+    expect(Option.isSome(receipt) ? receipt.value.fingerprint : null).toBe(
+      runtimeEventFingerprint(event),
+    );
+
+    await harness.run(
+      harness.engine.dispatch({
+        type: "thread.unarchive",
+        commandId: CommandId.make("cmd-unarchive-herdr-thread"),
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message) =>
+          message.id === "assistant:assistant-archived" &&
+          message.text === "Archived transcript update.",
+      ),
+    );
+    expect(
+      thread.messages.filter((message) => message.id === "assistant:assistant-archived"),
+    ).toHaveLength(1);
+    const replayedReceipt = await harness.run(
+      harness.runtimeEventReceipts.get({ provider: event.provider, eventId: event.eventId }),
+    );
+    expect(Option.isSome(replayedReceipt) ? replayedReceipt.value.fingerprint : null).toBe(
+      runtimeEventFingerprint(event),
+    );
+  });
+
+  it("acknowledges HerdR snapshots for deleted threads", async () => {
+    const harness = await createHarness();
+    await harness.run(
+      harness.engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("cmd-delete-herdr-thread"),
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+    const event = {
+      type: "item.completed" as const,
+      eventId: asEventId("herdr-codex:thread-1:session-1:turn-deleted:item:assistant-deleted"),
+      provider: ProviderDriverKind.make("herdr"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-deleted"),
+      itemId: RuntimeItemId.make("assistant-deleted"),
+      payload: {
+        itemType: "assistant_message" as const,
+        status: "completed" as const,
+        detail: "Deleted transcript update.",
+      },
+    };
+
+    harness.emit(event);
+    await harness.drain();
+
+    const receipt = await harness.run(
+      harness.runtimeEventReceipts.get({ provider: event.provider, eventId: event.eventId }),
+    );
+    expect(Option.isSome(receipt) ? receipt.value.fingerprint : null).toBe(
+      runtimeEventFingerprint(event),
+    );
   });
 
   it("preserves completed tool metadata on projected tool activities", async () => {
@@ -1974,7 +2815,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resumedMessage?.text).toBe(" second half");
     expect(resumedMessage?.streaming).toBe(false);
 
-    const events = await Effect.runPromise(
+    const events = await harness.run(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),
       ),
@@ -2112,7 +2953,7 @@ describe("ProviderRuntimeIngestion", () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
     const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
+    await harness.run(
       harness.engine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.make("cmd-turn-start-streaming-mode"),
@@ -2330,7 +3171,7 @@ describe("ProviderRuntimeIngestion", () => {
         ),
     );
 
-    const events = await Effect.runPromise(
+    const events = await harness.run(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),
       ),

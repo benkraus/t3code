@@ -1,4 +1,10 @@
-import { ProjectId, ThreadId, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  EventId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -7,13 +13,16 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { ProjectionProjectRepositoryLive } from "./ProjectionProjects.ts";
+import { ProviderRuntimeEventReceiptRepositoryLive } from "./ProviderRuntimeEventReceipts.ts";
 import { ProjectionThreadRepositoryLive } from "./ProjectionThreads.ts";
 import { ProjectionProjectRepository } from "../Services/ProjectionProjects.ts";
+import { ProviderRuntimeEventReceiptRepository } from "../Services/ProviderRuntimeEventReceipts.ts";
 import { ProjectionThreadRepository } from "../Services/ProjectionThreads.ts";
 
 const projectionRepositoriesLayer = it.layer(
   Layer.mergeAll(
     ProjectionProjectRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+    ProviderRuntimeEventReceiptRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     ProjectionThreadRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     SqlitePersistenceMemory,
   ),
@@ -126,6 +135,57 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         instanceId: ProviderInstanceId.make("claudeAgent"),
         model: "claude-opus-4-6",
       });
+    }),
+  );
+
+  it.effect("keeps thread freshness monotonic across ISO offsets", () =>
+    Effect.gen(function* () {
+      const threads = yield* ProjectionThreadRepository;
+      const row = {
+        threadId: ThreadId.make("thread-offset-order"),
+        projectId: ProjectId.make("project-offset-order"),
+        title: "Offset ordering",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        branch: null,
+        worktreePath: null,
+        latestTurnId: null,
+        createdAt: "2026-04-01T00:00:00.000Z",
+        updatedAt: "2026-04-01T10:00:00+05:00",
+        archivedAt: null,
+        latestUserMessageAt: null,
+        pendingApprovalCount: 0,
+        pendingUserInputCount: 0,
+        hasActionableProposedPlan: 0,
+        deletedAt: null,
+      };
+      yield* threads.upsert(row);
+      yield* threads.upsert({ ...row, updatedAt: "2026-04-01T06:00:00Z" });
+
+      const persisted = yield* threads.getById({ threadId: row.threadId });
+      assert.strictEqual(Option.getOrNull(persisted)?.updatedAt, "2026-04-01T06:00:00Z");
+    }),
+  );
+
+  it.effect("deletes a provider runtime event receipt by provider and event id", () =>
+    Effect.gen(function* () {
+      const receipts = yield* ProviderRuntimeEventReceiptRepository;
+      const provider = ProviderDriverKind.make("herdr");
+      const eventId = EventId.make("herdr-codex:thread-1:session-1:turn-1:turn:completed");
+
+      yield* receipts.upsert({
+        provider,
+        eventId,
+        fingerprint: "completion-fingerprint",
+        processedAt: "2026-07-20T00:00:00.000Z",
+      });
+      yield* receipts.deleteByEventId({ provider, eventId });
+
+      assert.isTrue(Option.isNone(yield* receipts.get({ provider, eventId })));
     }),
   );
 });

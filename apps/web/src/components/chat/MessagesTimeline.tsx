@@ -161,6 +161,7 @@ interface MessagesTimelineProps {
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   latestTurn: TimelineLatestTurn | null;
   runningTurnId: TurnId | null;
+  defaultExpandCompletedTurns?: boolean;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -195,6 +196,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timelineEntries,
   latestTurn,
   runningTurnId,
+  defaultExpandCompletedTurns = false,
   turnDiffSummaryByAssistantMessageId,
   routeThreadKey,
   onOpenTurnDiff,
@@ -227,20 +229,29 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [herdrLiveEntry, timelineEntries],
   );
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
+  const [collapsedTurnIds, setCollapsedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
 
-  const onToggleTurnFold = useCallback((turnId: TurnId) => {
-    setExpandedTurnIds((existing) => {
-      const next = new Set(existing);
-      if (next.has(turnId)) {
-        next.delete(turnId);
+  const onToggleTurnFold = useCallback(
+    (turnId: TurnId) => {
+      const update = (existing: ReadonlySet<TurnId>) => {
+        const next = new Set(existing);
+        if (next.has(turnId)) {
+          next.delete(turnId);
+        } else {
+          next.add(turnId);
+        }
+        return next;
+      };
+      if (defaultExpandCompletedTurns) {
+        setCollapsedTurnIds(update);
       } else {
-        next.add(turnId);
+        setExpandedTurnIds(update);
       }
-      return next;
-    });
-  }, []);
+    },
+    [defaultExpandCompletedTurns],
+  );
   const onToggleWorkGroup = useCallback(
     (groupId: string, anchorElement?: HTMLElement) => {
       const anchorBottomBeforeToggle = anchorElement?.getBoundingClientRect().bottom ?? null;
@@ -286,6 +297,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     if (latestTurn.turnId === previous.turnId) {
       if (previous.state === "running" && latestTurn.state === "interrupted") {
+        if (defaultExpandCompletedTurns) {
+          setCollapsedTurnIds((existing) => {
+            if (!existing.has(latestTurn.turnId)) {
+              return existing;
+            }
+            const next = new Set(existing);
+            next.delete(latestTurn.turnId);
+            return next;
+          });
+          return;
+        }
         setExpandedTurnIds((existing) => {
           const next = new Set(existing);
           next.add(latestTurn.turnId);
@@ -302,7 +324,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       next.delete(previous.turnId);
       return next;
     });
-  }, [latestTurn]);
+  }, [defaultExpandCompletedTurns, latestTurn]);
 
   const rawRows = useMemo(
     () =>
@@ -310,7 +332,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         timelineEntries: renderedTimelineEntries,
         latestTurn,
         runningTurnId,
+        defaultExpandCompletedTurns,
         expandedTurnIds,
+        collapsedTurnIds,
         expandedWorkGroupIds,
         isWorking,
         activeTurnStartedAt,
@@ -321,7 +345,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       renderedTimelineEntries,
       latestTurn,
       runningTurnId,
+      defaultExpandCompletedTurns,
       expandedTurnIds,
+      collapsedTurnIds,
       expandedWorkGroupIds,
       isWorking,
       activeTurnStartedAt,

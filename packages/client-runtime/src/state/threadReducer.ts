@@ -12,6 +12,7 @@ import type {
   OrchestrationThreadActivity,
   TurnId,
 } from "@t3tools/contracts";
+import { isExternalHerdrTurnReopen, maxIsoDateTime } from "@t3tools/shared/orchestrationTiming";
 
 export type ThreadDetailReducerResult =
   | { readonly kind: "updated"; readonly thread: OrchestrationThread }
@@ -149,7 +150,7 @@ export function applyThreadDetailEvent(
             : {}),
           runtimeMode: event.payload.runtimeMode,
           interactionMode: event.payload.interactionMode,
-          updatedAt: event.occurredAt,
+          updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
         },
       };
 
@@ -171,7 +172,7 @@ export function applyThreadDetailEvent(
             startedAt: latestTurn.startedAt ?? event.payload.createdAt,
             completedAt: latestTurn.completedAt ?? event.payload.createdAt,
           },
-          updatedAt: event.occurredAt,
+          updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
         },
       };
     }
@@ -204,6 +205,7 @@ export function applyThreadDetailEvent(
                       ? message.text
                       : entry.text,
                   streaming: message.streaming,
+                  createdAt: event.payload.replaceCreatedAt ? message.createdAt : entry.createdAt,
                   ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
                   ...(message.streaming ? {} : { updatedAt: message.updatedAt }),
                   ...(message.attachments !== undefined
@@ -222,19 +224,26 @@ export function applyThreadDetailEvent(
         thread.session?.status === "running" &&
         thread.session.activeTurnId === event.payload.turnId;
       const settlesTurn = !event.payload.streaming && !turnStillRunning;
+      const preservesTerminalLifecycle =
+        thread.latestTurn?.turnId === event.payload.turnId &&
+        (thread.latestTurn.state === "completed" ||
+          thread.latestTurn.state === "interrupted" ||
+          thread.latestTurn.state === "error");
       const latestTurn: OrchestrationThread["latestTurn"] =
         event.payload.role === "assistant" &&
         event.payload.turnId !== null &&
         (thread.latestTurn === null || thread.latestTurn.turnId === event.payload.turnId)
           ? {
               turnId: event.payload.turnId,
-              state: settlesTurn
-                ? thread.latestTurn?.state === "interrupted"
-                  ? "interrupted"
-                  : thread.latestTurn?.state === "error"
-                    ? "error"
-                    : "completed"
-                : "running",
+              state: preservesTerminalLifecycle
+                ? thread.latestTurn!.state
+                : settlesTurn
+                  ? thread.latestTurn?.state === "interrupted"
+                    ? "interrupted"
+                    : thread.latestTurn?.state === "error"
+                      ? "error"
+                      : "completed"
+                  : "running",
               requestedAt:
                 thread.latestTurn?.turnId === event.payload.turnId
                   ? thread.latestTurn.requestedAt
@@ -243,11 +252,13 @@ export function applyThreadDetailEvent(
                 thread.latestTurn?.turnId === event.payload.turnId
                   ? (thread.latestTurn.startedAt ?? event.payload.createdAt)
                   : event.payload.createdAt,
-              completedAt: settlesTurn
-                ? event.payload.updatedAt
-                : thread.latestTurn?.turnId === event.payload.turnId
-                  ? (thread.latestTurn.completedAt ?? null)
-                  : null,
+              completedAt: preservesTerminalLifecycle
+                ? thread.latestTurn!.completedAt
+                : settlesTurn
+                  ? event.payload.updatedAt
+                  : thread.latestTurn?.turnId === event.payload.turnId
+                    ? (thread.latestTurn.completedAt ?? null)
+                    : null,
               assistantMessageId: event.payload.messageId,
             }
           : thread.latestTurn;
@@ -269,7 +280,7 @@ export function applyThreadDetailEvent(
           messages,
           checkpoints,
           latestTurn,
-          updatedAt: event.occurredAt,
+          updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
         },
       };
     }
@@ -279,37 +290,60 @@ export function applyThreadDetailEvent(
       // Leaving the "running" session status is the turn-end signal: settle a
       // still-running latest turn so its duration reflects the whole turn.
       const settledTurnState = settledTurnStateForSessionStatus(event.payload.session.status);
+      const reconciledLatestTurn =
+        event.payload.turnTiming !== undefined &&
+        thread.latestTurn?.turnId === event.payload.turnTiming.turnId
+          ? {
+              ...thread.latestTurn,
+              ...(event.payload.turnTiming.startedAt !== undefined
+                ? { startedAt: event.payload.turnTiming.startedAt }
+                : {}),
+              ...(event.payload.turnTiming.completedAt !== undefined
+                ? { completedAt: event.payload.turnTiming.completedAt }
+                : {}),
+              ...(event.payload.turnTiming.state !== undefined
+                ? { state: event.payload.turnTiming.state }
+                : {}),
+            }
+          : thread.latestTurn;
+      const reopensExternalHerdrTurn = isExternalHerdrTurnReopen({
+        providerName: event.payload.session.providerName,
+        sessionStatus: event.payload.session.status,
+        activeTurnId: event.payload.session.activeTurnId,
+        currentTurn: thread.latestTurn,
+        ...(event.payload.turnTiming !== undefined ? { turnTiming: event.payload.turnTiming } : {}),
+      });
       const latestTurn: OrchestrationLatestTurn | null =
         event.payload.session.status === "running" && event.payload.session.activeTurnId !== null
           ? {
               turnId: event.payload.session.activeTurnId,
               state: "running",
               requestedAt:
-                thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                  ? thread.latestTurn.requestedAt
+                reconciledLatestTurn?.turnId === event.payload.session.activeTurnId
+                  ? reconciledLatestTurn.requestedAt
                   : event.payload.session.updatedAt,
               startedAt:
-                thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                  ? (thread.latestTurn.startedAt ?? event.payload.session.updatedAt)
+                reconciledLatestTurn?.turnId === event.payload.session.activeTurnId
+                  ? (reconciledLatestTurn.startedAt ?? event.payload.session.updatedAt)
                   : event.payload.session.updatedAt,
               completedAt: null,
               assistantMessageId:
-                thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                  ? thread.latestTurn.assistantMessageId
+                reconciledLatestTurn?.turnId === event.payload.session.activeTurnId
+                  ? reconciledLatestTurn.assistantMessageId
                   : null,
             }
-          : thread.latestTurn !== null &&
-              thread.latestTurn.state === "running" &&
+          : reconciledLatestTurn !== null &&
+              reconciledLatestTurn.state === "running" &&
               settledTurnState !== null
             ? {
-                ...thread.latestTurn,
+                ...reconciledLatestTurn,
                 state: settledTurnState,
                 // A running turn's completedAt can only hold a mid-turn
                 // placeholder checkpoint timestamp — the session leaving
                 // "running" is the authoritative turn end.
                 completedAt: event.payload.session.updatedAt,
               }
-            : thread.latestTurn;
+            : reconciledLatestTurn;
 
       return {
         kind: "updated",
@@ -317,7 +351,12 @@ export function applyThreadDetailEvent(
           ...thread,
           session: event.payload.session,
           latestTurn,
-          updatedAt: event.occurredAt,
+          checkpoints: reopensExternalHerdrTurn
+            ? thread.checkpoints.filter(
+                (checkpoint) => checkpoint.turnId !== event.payload.session.activeTurnId,
+              )
+            : thread.checkpoints,
+          updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
         },
       };
     }
@@ -335,7 +374,7 @@ export function applyThreadDetailEvent(
                 activeTurnId: null,
                 updatedAt: event.payload.createdAt,
               },
-              updatedAt: event.occurredAt,
+              updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
             },
           };
 
@@ -352,7 +391,11 @@ export function applyThreadDetailEvent(
 
       return {
         kind: "updated",
-        thread: { ...thread, proposedPlans, updatedAt: event.occurredAt },
+        thread: {
+          ...thread,
+          proposedPlans,
+          updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
+        },
       };
     }
 
@@ -401,7 +444,12 @@ export function applyThreadDetailEvent(
 
       return {
         kind: "updated",
-        thread: { ...thread, checkpoints, latestTurn, updatedAt: event.occurredAt },
+        thread: {
+          ...thread,
+          checkpoints,
+          latestTurn,
+          updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
+        },
       };
     }
 
@@ -450,7 +498,7 @@ export function applyThreadDetailEvent(
                   completedAt: latestCheckpoint.completedAt,
                   assistantMessageId: latestCheckpoint.assistantMessageId ?? null,
                 },
-          updatedAt: event.occurredAt,
+          updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
         },
       };
     }
@@ -466,7 +514,11 @@ export function applyThreadDetailEvent(
 
       return {
         kind: "updated",
-        thread: { ...thread, activities, updatedAt: event.occurredAt },
+        thread: {
+          ...thread,
+          activities,
+          updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
+        },
       };
     }
 

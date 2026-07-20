@@ -625,6 +625,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           session: command.session,
+          ...(command.turnTiming !== undefined ? { turnTiming: command.turnTiming } : {}),
         },
       };
     }
@@ -677,6 +678,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: command.text,
           turnId: command.turnId ?? null,
           streaming: false,
+          ...(command.replaceCreatedAt !== undefined
+            ? { replaceCreatedAt: command.replaceCreatedAt }
+            : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -701,9 +705,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           messageId: command.messageId,
           role: "assistant",
-          text: "",
+          text: command.text ?? "",
           turnId: command.turnId ?? null,
           streaming: false,
+          ...(command.replaceCreatedAt !== undefined
+            ? { replaceCreatedAt: command.replaceCreatedAt }
+            : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },

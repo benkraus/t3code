@@ -367,7 +367,9 @@ export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   latestTurn?: TimelineLatestTurn | null;
   runningTurnId?: TurnId | null;
+  defaultExpandCompletedTurns?: boolean;
   expandedTurnIds?: ReadonlySet<TurnId>;
+  collapsedTurnIds?: ReadonlySet<TurnId>;
   expandedWorkGroupIds?: ReadonlySet<string>;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
@@ -389,9 +391,12 @@ export function deriveMessagesTimelineRows(input: {
     latestTurn: input.latestTurn ?? null,
     unsettledTurnId,
   });
+  const isTurnExpanded = (turnId: TurnId): boolean =>
+    input.expandedTurnIds?.has(turnId) === true ||
+    (input.defaultExpandCompletedTurns === true && input.collapsedTurnIds?.has(turnId) !== true);
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorEntryId.values()) {
-    if (!input.expandedTurnIds?.has(fold.turnId)) {
+    if (!isTurnExpanded(fold.turnId)) {
       for (const entryId of fold.hiddenEntryIds) {
         collapsedEntryIds.add(entryId);
       }
@@ -412,7 +417,7 @@ export function deriveMessagesTimelineRows(input: {
         createdAt: turnFold.createdAt,
         turnId: turnFold.turnId,
         label: turnFold.label,
-        expanded: input.expandedTurnIds?.has(turnFold.turnId) ?? false,
+        expanded: isTurnExpanded(turnFold.turnId),
       });
     }
 

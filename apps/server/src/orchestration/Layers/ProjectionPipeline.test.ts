@@ -190,6 +190,124 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("orders latest user message timestamps by instant across ISO offsets", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-user-message-offset-order");
+      const appendAndProject = <T extends Parameters<typeof eventStore.append>[0]>(event: T) =>
+        eventStore.append(event).pipe(Effect.flatMap(projectionPipeline.projectEvent));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-user-message-offset-project"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-user-message-offset-order"),
+        occurredAt: "2026-04-01T00:00:00.000Z",
+        commandId: CommandId.make("cmd-user-message-offset-project"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-user-message-offset-project"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-user-message-offset-order"),
+          title: "Offset ordering",
+          workspaceRoot: "/tmp/project-user-message-offset-order",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-04-01T00:00:00.000Z",
+          updatedAt: "2026-04-01T00:00:00.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-user-message-offset-thread"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-04-01T00:00:00.000Z",
+        commandId: CommandId.make("cmd-user-message-offset-thread"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-user-message-offset-thread"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-user-message-offset-order"),
+          title: "Offset ordering",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          updatedAt: "2026-04-01T00:00:00.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-user-message-offset-earlier"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-04-01T10:00:00+05:00",
+        commandId: CommandId.make("cmd-user-message-offset-earlier"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-user-message-offset-earlier"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-user-offset-earlier"),
+          role: "user",
+          text: "Earlier instant",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T10:00:00+05:00",
+          updatedAt: "2026-04-01T10:00:00+05:00",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-user-message-offset-later"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-04-01T06:00:00Z",
+        commandId: CommandId.make("cmd-user-message-offset-later"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-user-message-offset-later"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-user-offset-later"),
+          role: "user",
+          text: "Later instant",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T06:00:00Z",
+          updatedAt: "2026-04-01T06:00:00Z",
+        },
+      });
+
+      const readLatestUserMessageAt = sql<{ readonly latestUserMessageAt: string | null }>`
+        SELECT latest_user_message_at AS "latestUserMessageAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(yield* readLatestUserMessageAt, [
+        { latestUserMessageAt: "2026-04-01T06:00:00Z" },
+      ]);
+
+      yield* sql`
+        UPDATE projection_threads
+        SET latest_user_message_at = NULL
+        WHERE thread_id = ${threadId}
+      `;
+      yield* projectionPipeline.bootstrap;
+      assert.deepEqual(yield* readLatestUserMessageAt, [
+        { latestUserMessageAt: "2026-04-01T06:00:00Z" },
+      ]);
+    }),
+  );
+
   it.effect("bootstraps beyond the event store's default read limit", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -1779,6 +1897,148 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.deepEqual(rows, [
         { turnId: oldTurnId, state: "completed", completedAt: "2026-01-01T00:00:30.000Z" },
         { turnId: newTurnId, state: "running", completedAt: null },
+      ]);
+    }),
+  );
+
+  it.effect("reopens a stale completed HerdR turn when the external session is running", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-herdr-reopen");
+      const turnId = TurnId.make("turn-herdr-reopen");
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-herdr-reopen-1"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:00.000Z",
+        commandId: CommandId.make("cmd-herdr-reopen-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-herdr-reopen-1"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-herdr-reopen"),
+          title: "HerdR reopen",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("herdr"),
+            model: "herdr-managed",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-herdr-reopen-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: CommandId.make("cmd-herdr-reopen-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-herdr-reopen-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "herdr",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:01.000Z",
+          },
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-herdr-reopen-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        commandId: CommandId.make("cmd-herdr-reopen-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-herdr-reopen-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "herdr",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:02.000Z",
+          },
+        },
+      });
+      yield* projectionPipeline.bootstrap;
+      yield* sql`
+        UPDATE projection_turns
+        SET checkpoint_turn_count = 7,
+          checkpoint_ref = 'refs/t3/checkpoints/stale',
+          checkpoint_status = 'missing'
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+      `;
+
+      yield* eventStore.append({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-herdr-reopen-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:03.000Z",
+        commandId: CommandId.make("cmd-herdr-reopen-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-herdr-reopen-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "herdr",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:03.000Z",
+          },
+          turnTiming: {
+            turnId,
+            startedAt: "2026-01-01T00:00:01.000Z",
+          },
+        },
+      });
+      yield* projectionPipeline.bootstrap;
+
+      const rows = yield* sql<{
+        readonly state: string;
+        readonly completedAt: string | null;
+        readonly checkpointTurnCount: number | null;
+        readonly checkpointRef: string | null;
+      }>`
+        SELECT
+          state,
+          completed_at AS "completedAt",
+          checkpoint_turn_count AS "checkpointTurnCount",
+          checkpoint_ref AS "checkpointRef"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+      `;
+      assert.deepEqual(rows, [
+        {
+          state: "running",
+          completedAt: null,
+          checkpointTurnCount: null,
+          checkpointRef: null,
+        },
       ]);
     }),
   );

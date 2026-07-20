@@ -1,4 +1,5 @@
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
@@ -11,10 +12,12 @@ import { buildCodexInitializeParams } from "../provider/Layers/CodexProvider.ts"
 
 const FORCE_KILL_AFTER = "2 seconds" as const;
 
+export type CodexThreadSnapshot = CodexSchema.V2ThreadReadResponse["thread"];
+
 export interface CodexThreadReader {
   readonly readThread: (
     threadId: string,
-  ) => Effect.Effect<CodexSchema.V2ThreadReadResponse["thread"], CodexErrors.CodexAppServerError>;
+  ) => Effect.Effect<CodexThreadSnapshot, CodexErrors.CodexAppServerError>;
 }
 
 export const makeCodexThreadReader = Effect.fn("Herdr.makeCodexThreadReader")(function* (input: {
@@ -28,6 +31,7 @@ export const makeCodexThreadReader = Effect.fn("Herdr.makeCodexThreadReader")(fu
 > {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const scope = yield* Scope.Scope;
+  const platform = yield* HostProcessPlatform;
   const environment = input.environment ?? process.env;
   const spawnCommand = yield* resolveSpawnCommand(input.binaryPath, ["app-server"], {
     env: environment,
@@ -37,6 +41,7 @@ export const makeCodexThreadReader = Effect.fn("Herdr.makeCodexThreadReader")(fu
     .spawn(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         cwd: input.cwd,
+        detached: platform !== "win32",
         env: environment,
         extendEnv: input.environment === undefined,
         forceKillAfter: FORCE_KILL_AFTER,

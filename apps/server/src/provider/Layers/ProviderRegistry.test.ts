@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -48,6 +49,8 @@ import { readProviderStatusCache, resolveProviderStatusCachePath } from "../prov
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../Services/ProviderRegistry.ts";
+import { ProviderRuntimeEventReceiptRepository } from "../../persistence/Services/ProviderRuntimeEventReceipts.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
@@ -70,6 +73,35 @@ const TestHttpClientLive = Layer.succeed(
   HttpClient.make((request) =>
     Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ version: "0.0.0" }))),
   ),
+);
+
+const EmptyProviderRuntimeEventReceiptRepositoryLive = Layer.succeed(
+  ProviderRuntimeEventReceiptRepository,
+  ProviderRuntimeEventReceiptRepository.of({
+    deleteByEventId: () => Effect.void,
+    get: () => Effect.succeed(Option.none()),
+    listByEventIdPrefix: () => Effect.succeed([]),
+    upsert: () => Effect.void,
+  }),
+);
+
+const EmptyProjectionTurnRepositoryLive = Layer.succeed(
+  ProjectionTurnRepository,
+  ProjectionTurnRepository.of({
+    upsertByTurnId: () => Effect.void,
+    replacePendingTurnStart: () => Effect.void,
+    getPendingTurnStartByThreadId: () => Effect.succeed(Option.none()),
+    deletePendingTurnStartByThreadId: () => Effect.void,
+    listByThreadId: () => Effect.succeed([]),
+    getByTurnId: () => Effect.succeed(Option.none()),
+    clearCheckpointTurnConflict: () => Effect.void,
+    deleteByThreadId: () => Effect.void,
+  }),
+);
+
+const ProviderInstanceRegistryHydrationTestLive = ProviderInstanceRegistryHydrationLive.pipe(
+  Layer.provide(EmptyProviderRuntimeEventReceiptRepositoryLive),
+  Layer.provide(EmptyProjectionTurnRepositoryLive),
 );
 
 function selectDescriptor(
@@ -1103,7 +1135,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const scope = yield* Scope.make();
           yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
           const providerRegistryLayer = ProviderRegistryLive.pipe(
-            Layer.provideMerge(ProviderInstanceRegistryHydrationLive),
+            Layer.provideMerge(ProviderInstanceRegistryHydrationTestLive),
             Layer.provideMerge(
               Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
             ),
@@ -1195,7 +1227,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const scope = yield* Scope.make();
           yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
           const providerRegistryLayer = ProviderRegistryLive.pipe(
-            Layer.provideMerge(ProviderInstanceRegistryHydrationLive),
+            Layer.provideMerge(ProviderInstanceRegistryHydrationTestLive),
             Layer.provideMerge(
               Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
             ),
@@ -1316,7 +1348,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const scope = yield* Scope.make();
           yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
           const providerRegistryLayer = ProviderRegistryLive.pipe(
-            Layer.provideMerge(ProviderInstanceRegistryHydrationLive),
+            Layer.provideMerge(ProviderInstanceRegistryHydrationTestLive),
             Layer.provideMerge(
               Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
             ),
@@ -1377,7 +1409,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             const scope = yield* Scope.make();
             yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
             const providerRegistryLayer = ProviderRegistryLive.pipe(
-              Layer.provideMerge(ProviderInstanceRegistryHydrationLive),
+              Layer.provideMerge(ProviderInstanceRegistryHydrationTestLive),
               Layer.provideMerge(
                 Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
               ),

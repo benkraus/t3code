@@ -15,6 +15,7 @@ import {
   type OrchestrationProposedPlan,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
+  type OrchestrationThreadShell,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
@@ -27,9 +28,18 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
+import { runtimeEventFingerprint } from "../../herdr/codexTranscript.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
+import { ProviderRuntimeEventReceiptRepository } from "../../persistence/Services/ProviderRuntimeEventReceipts.ts";
+import { ProviderRuntimeEventReceiptRepositoryLive } from "../../persistence/Layers/ProviderRuntimeEventReceipts.ts";
+import { ProjectionThreadMessageRepository } from "../../persistence/Services/ProjectionThreadMessages.ts";
+import { ProjectionThreadMessageRepositoryLive } from "../../persistence/Layers/ProjectionThreadMessages.ts";
+import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
+import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -84,6 +94,25 @@ function sameId(left: string | null | undefined, right: string | null | undefine
     return false;
   }
   return left === right;
+}
+
+function isTerminalHerdrTranscriptTurnStart(event: ProviderRuntimeEvent): boolean {
+  if (
+    event.provider !== "herdr" ||
+    event.type !== "turn.started" ||
+    !String(event.eventId).startsWith("herdr-codex:") ||
+    event.raw?.source !== "codex.app-server.notification" ||
+    event.raw.method !== "thread/read"
+  ) {
+    return false;
+  }
+  const payload = event.raw.payload;
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    "terminal" in payload &&
+    payload.terminal === true
+  );
 }
 
 function hasAssistantMessageForTurn(
@@ -178,6 +207,10 @@ function hasRenderableAssistantText(text: string | undefined): boolean {
   return (text?.trim().length ?? 0) > 0;
 }
 
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
   return `plan:${threadId}:turn:${turnId}`;
 }
@@ -221,6 +254,20 @@ function normalizeRuntimeTurnState(
     case "completed":
       return value;
     default:
+      return "completed";
+  }
+}
+
+function projectionTurnStateFromRuntime(
+  value: string | undefined,
+): "completed" | "interrupted" | "error" {
+  switch (normalizeRuntimeTurnState(value)) {
+    case "failed":
+      return "error";
+    case "interrupted":
+    case "cancelled":
+      return "interrupted";
+    case "completed":
       return "completed";
   }
 }
@@ -633,6 +680,10 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const projectionThreadRepository = yield* ProjectionThreadRepository;
+  const runtimeEventReceipts = yield* ProviderRuntimeEventReceiptRepository;
+  const projectionThreadMessages = yield* ProjectionThreadMessageRepository;
+  const projectionThreadActivities = yield* ProjectionThreadActivityRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
@@ -668,13 +719,13 @@ const make = Effect.gen(function* () {
 
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
-      .getThreadDetailById(threadId)
+      .getThreadDetailById(threadId, { includeArchived: true })
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
   const resolveThreadShell = Effect.fn("resolveThreadShell")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
-      .getThreadShellById(threadId)
+      .getThreadShellById(threadId, { includeArchived: true })
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
@@ -926,7 +977,9 @@ const make = Effect.gen(function* () {
     commandTag: string;
     finalDeltaCommandTag: string;
     fallbackText?: string;
+    replacementText?: string;
     hasProjectedMessage?: boolean;
+    replaceCreatedAt?: boolean;
   }) =>
     Effect.gen(function* () {
       const bufferedText = yield* takeBufferedAssistantText(input.messageId);
@@ -937,8 +990,9 @@ const make = Effect.gen(function* () {
             ? input.fallbackText!
             : "";
       const hasRenderableText = hasRenderableAssistantText(text);
+      const hasReplacementText = hasRenderableAssistantText(input.replacementText ?? "");
 
-      if (hasRenderableText) {
+      if (hasRenderableText && !hasReplacementText) {
         yield* orchestrationEngine.dispatch({
           type: "thread.message.assistant.delta",
           commandId: yield* providerCommandId(input.event, input.finalDeltaCommandTag),
@@ -956,7 +1010,11 @@ const make = Effect.gen(function* () {
           commandId: yield* providerCommandId(input.event, input.commandTag),
           threadId: input.threadId,
           messageId: input.messageId,
+          ...(hasReplacementText ? { text: input.replacementText } : {}),
           ...(input.turnId ? { turnId: input.turnId } : {}),
+          ...(input.replaceCreatedAt !== undefined
+            ? { replaceCreatedAt: input.replaceCreatedAt }
+            : {}),
           createdAt: input.createdAt,
         });
       }
@@ -1203,10 +1261,130 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const legacyHerdrEventAlreadyProjected = Effect.fn("legacyHerdrEventAlreadyProjected")(function* (
+    event: ProviderRuntimeEvent,
+    thread: OrchestrationThreadShell,
+  ) {
+    const turnId = toTurnId(event.turnId);
+
+    if (event.type === "turn.started" && turnId) {
+      const projectedTurn = yield* projectionTurnRepository.getByTurnId({
+        threadId: thread.id,
+        turnId,
+      });
+      if (Option.isNone(projectedTurn)) return false;
+      if (projectedTurn.value.startedAt !== event.createdAt) return false;
+      if (thread.session?.status === "running") {
+        return (
+          projectedTurn.value.state === "running" && sameId(thread.session.activeTurnId, turnId)
+        );
+      }
+      return projectedTurn.value.state !== "running";
+    }
+
+    if (event.type === "turn.completed" && turnId) {
+      const projectedTurn = yield* projectionTurnRepository.getByTurnId({
+        threadId: thread.id,
+        turnId,
+      });
+      return (
+        Option.isSome(projectedTurn) &&
+        projectedTurn.value.state === projectionTurnStateFromRuntime(event.payload.state) &&
+        projectedTurn.value.completedAt === event.createdAt
+      );
+    }
+
+    if (event.type === "item.completed" && event.payload.itemType === "assistant_message") {
+      const messageId = MessageId.make(
+        `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
+      );
+      const projectedMessage = yield* projectionThreadMessages.getByMessageId({ messageId });
+      const message = Option.getOrUndefined(projectedMessage);
+      return (
+        message?.role === "assistant" &&
+        message.isStreaming === false &&
+        message.text === (event.payload.detail ?? "").trim() &&
+        message.createdAt === event.createdAt &&
+        message.updatedAt === event.createdAt &&
+        (turnId === undefined || sameId(message.turnId, turnId))
+      );
+    }
+
+    if (event.type === "item.completed" && event.payload.itemType === "user_message") {
+      const messageId = MessageId.make(`user:${event.itemId ?? event.turnId ?? event.eventId}`);
+      const projectedMessage = yield* projectionThreadMessages.getByMessageId({ messageId });
+      const message = Option.getOrUndefined(projectedMessage);
+      return (
+        message?.role === "user" &&
+        message.isStreaming === false &&
+        message.text === (event.payload.detail ?? "").trim() &&
+        message.createdAt === event.createdAt &&
+        message.updatedAt === event.createdAt &&
+        (turnId === undefined || sameId(message.turnId, turnId))
+      );
+    }
+
+    if (event.type === "turn.proposed.completed") {
+      const detailedThread = yield* resolveThreadDetail(thread.id);
+      const planId = proposedPlanIdFromEvent(event, thread.id);
+      return (detailedThread?.proposedPlans ?? []).some(
+        (plan) =>
+          plan.id === planId &&
+          plan.planMarkdown === event.payload.planMarkdown.trim() &&
+          plan.updatedAt === event.createdAt,
+      );
+    }
+
+    const activities = runtimeEventToActivities(event);
+    if (activities.length > 0) {
+      const matches = yield* Effect.forEach(
+        activities,
+        (activity) =>
+          projectionThreadActivities.getByActivityId({ activityId: activity.id }).pipe(
+            Effect.map(Option.getOrUndefined),
+            Effect.map((projected) =>
+              Boolean(
+                projected !== undefined &&
+                projected.kind === activity.kind &&
+                projected.tone === activity.tone &&
+                projected.summary === activity.summary &&
+                projected.turnId === activity.turnId &&
+                projected.createdAt === activity.createdAt &&
+                sameJson(projected.payload, activity.payload),
+              ),
+            ),
+          ),
+        { concurrency: 1 },
+      );
+      return matches.every(Boolean);
+    }
+
+    // Persisted HerdR snapshot events without a projection side effect were
+    // already consumed by the legacy ingestion path.
+    return true;
+  });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
+      const isHerdrSnapshotEvent =
+        event.provider === "herdr" && String(event.eventId).startsWith("herdr-codex:");
       const thread = yield* resolveThreadShell(event.threadId);
-      if (!thread) return;
+      if (!thread) {
+        if (isHerdrSnapshotEvent) {
+          const projectedThread = yield* projectionThreadRepository.getById({
+            threadId: event.threadId,
+          });
+          if (Option.isSome(projectedThread) && projectedThread.value.deletedAt !== null) {
+            yield* runtimeEventReceipts.upsert({
+              provider: event.provider,
+              eventId: event.eventId,
+              fingerprint: runtimeEventFingerprint(event),
+              processedAt: event.createdAt,
+            });
+          }
+        }
+        return;
+      }
 
       let loadedThreadDetail: OrchestrationThread | null | undefined;
       const getLoadedThreadDetail = () =>
@@ -1218,6 +1396,28 @@ const make = Effect.gen(function* () {
           return loadedThreadDetail;
         });
 
+      const fingerprint = isHerdrSnapshotEvent ? runtimeEventFingerprint(event) : null;
+      if (isHerdrSnapshotEvent && fingerprint !== null) {
+        const receipt = yield* runtimeEventReceipts.get({
+          provider: event.provider,
+          eventId: event.eventId,
+        });
+        if (Option.isSome(receipt)) {
+          if (receipt.value.fingerprint === fingerprint) return;
+          if (receipt.value.fingerprint === null) {
+            if (yield* legacyHerdrEventAlreadyProjected(event, thread)) {
+              yield* runtimeEventReceipts.upsert({
+                provider: event.provider,
+                eventId: event.eventId,
+                fingerprint,
+                processedAt: event.createdAt,
+              });
+              return;
+            }
+          }
+        }
+      }
+
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
@@ -1225,6 +1425,31 @@ const make = Effect.gen(function* () {
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
       const missingTurnForActiveTurn = activeTurnId !== null && eventTurnId === undefined;
+      const terminalHerdrTranscriptTurnStart = isTerminalHerdrTranscriptTurnStart(event);
+      const terminalHerdrStartAlreadyProjected =
+        terminalHerdrTranscriptTurnStart && eventTurnId !== undefined
+          ? Option.match(
+              yield* projectionTurnRepository.getByTurnId({
+                threadId: thread.id,
+                turnId: eventTurnId,
+              }),
+              {
+                onNone: () => false,
+                onSome: (turn) => turn.state !== "running",
+              },
+            )
+          : false;
+      const historicalCompletionAlreadyProjected =
+        event.type === "turn.completed" &&
+        eventTurnId !== undefined &&
+        !sameId(thread.latestTurn?.turnId, eventTurnId)
+          ? Option.isSome(
+              yield* projectionTurnRepository.getByTurnId({
+                threadId: thread.id,
+                turnId: eventTurnId,
+              }),
+            )
+          : false;
 
       // A turn.started that conflicts with the active turn is legitimate when
       // the server itself has a turn start pending for this thread AND the
@@ -1243,6 +1468,9 @@ const make = Effect.gen(function* () {
           : false;
 
       const shouldApplyThreadLifecycle = (() => {
+        if (terminalHerdrStartAlreadyProjected) {
+          return false;
+        }
         if (!STRICT_PROVIDER_LIFECYCLE_GUARD) {
           return true;
         }
@@ -1255,6 +1483,9 @@ const make = Effect.gen(function* () {
           case "turn.started":
             return !conflictsWithActiveTurn || conflictingTurnStartIsPendingTurnStart;
           case "turn.completed":
+            if (historicalCompletionAlreadyProjected) {
+              return false;
+            }
             if (conflictsWithActiveTurn || missingTurnForActiveTurn) {
               return false;
             }
@@ -1316,7 +1547,11 @@ const make = Effect.gen(function* () {
                 ? null
                 : (thread.session?.lastError ?? null);
 
-        if (shouldApplyThreadLifecycle) {
+        if (
+          shouldApplyThreadLifecycle ||
+          terminalHerdrStartAlreadyProjected ||
+          historicalCompletionAlreadyProjected
+        ) {
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
               acceptedTurnStartedSourcePlan.sourceThreadId,
@@ -1337,23 +1572,49 @@ const make = Effect.gen(function* () {
             );
           }
 
+          const preservedSession = thread.session ?? {
+            threadId: thread.id,
+            status: "ready" as const,
+            providerName: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
+            runtimeMode: "full-access" as const,
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          };
+          const session = shouldApplyThreadLifecycle
+            ? {
+                threadId: thread.id,
+                status,
+                providerName: event.provider,
+                ...(event.providerInstanceId !== undefined
+                  ? { providerInstanceId: event.providerInstanceId }
+                  : {}),
+                runtimeMode: thread.session?.runtimeMode ?? "full-access",
+                activeTurnId: nextActiveTurnId,
+                lastError,
+                updatedAt: now,
+              }
+            : preservedSession;
+          const turnTiming =
+            event.type === "turn.started" && eventTurnId !== undefined
+              ? { turnId: eventTurnId, startedAt: now }
+              : event.type === "turn.completed" && eventTurnId !== undefined
+                ? {
+                    turnId: eventTurnId,
+                    completedAt: now,
+                    state: projectionTurnStateFromRuntime(event.payload.state),
+                  }
+                : undefined;
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
             commandId: yield* providerCommandId(event, "thread-session-set"),
             threadId: thread.id,
-            session: {
-              threadId: thread.id,
-              status,
-              providerName: event.provider,
-              ...(event.providerInstanceId !== undefined
-                ? { providerInstanceId: event.providerInstanceId }
-                : {}),
-              runtimeMode: thread.session?.runtimeMode ?? "full-access",
-              activeTurnId: nextActiveTurnId,
-              lastError,
-              updatedAt: now,
-            },
-            createdAt: now,
+            session,
+            ...(turnTiming !== undefined ? { turnTiming } : {}),
+            createdAt: shouldApplyThreadLifecycle ? now : session.updatedAt,
           });
         }
       }
@@ -1497,7 +1758,15 @@ const make = Effect.gen(function* () {
             Math.abs(eventTime - messageTime) <= 30_000
           );
         });
-        if (!duplicate) {
+        const existingImportedMessage = findMessageById(
+          detailedThread?.messages ?? [],
+          importedUserMessage.messageId,
+        );
+        const repairsCreatedAt =
+          isHerdrSnapshotEvent &&
+          existingImportedMessage !== undefined &&
+          existingImportedMessage.createdAt !== event.createdAt;
+        if (!duplicate || repairsCreatedAt) {
           const turnId = toTurnId(event.turnId);
           yield* orchestrationEngine.dispatch({
             type: "thread.message.user.import",
@@ -1506,6 +1775,7 @@ const make = Effect.gen(function* () {
             messageId: importedUserMessage.messageId,
             text: importedUserMessage.text,
             ...(turnId ? { turnId } : {}),
+            ...(isHerdrSnapshotEvent ? { replaceCreatedAt: true } : {}),
             createdAt: event.createdAt,
           });
         }
@@ -1527,6 +1797,12 @@ const make = Effect.gen(function* () {
         const existingAssistantMessage = findMessageById(messages, assistantMessageId);
         const shouldApplyFallbackCompletionText =
           !existingAssistantMessage || existingAssistantMessage.text.length === 0;
+        const replacementSnapshotText =
+          existingAssistantMessage !== undefined &&
+          (assistantCompletion.fallbackText?.trim().length ?? 0) > 0 &&
+          existingAssistantMessage.text !== assistantCompletion.fallbackText
+            ? assistantCompletion.fallbackText
+            : undefined;
 
         const shouldSkipRedundantCompletion =
           Option.isNone(activeAssistantMessageId) &&
@@ -1548,6 +1824,10 @@ const make = Effect.gen(function* () {
             commandTag: "assistant-complete",
             finalDeltaCommandTag: "assistant-delta-finalize",
             hasProjectedMessage: existingAssistantMessage !== undefined,
+            ...(isHerdrSnapshotEvent ? { replaceCreatedAt: true } : {}),
+            ...(replacementSnapshotText !== undefined
+              ? { replacementText: replacementSnapshotText }
+              : {}),
             ...(assistantCompletion.fallbackText !== undefined && shouldApplyFallbackCompletionText
               ? { fallbackText: assistantCompletion.fallbackText }
               : {}),
@@ -1705,6 +1985,21 @@ const make = Effect.gen(function* () {
           ),
         ),
       ).pipe(Effect.asVoid);
+
+      const shouldAcknowledgeHerdrSnapshotEvent =
+        event.type !== "turn.started" && event.type !== "turn.completed"
+          ? true
+          : shouldApplyThreadLifecycle ||
+            terminalHerdrStartAlreadyProjected ||
+            historicalCompletionAlreadyProjected;
+      if (isHerdrSnapshotEvent && fingerprint !== null && shouldAcknowledgeHerdrSnapshotEvent) {
+        yield* runtimeEventReceipts.upsert({
+          provider: event.provider,
+          eventId: event.eventId,
+          fingerprint,
+          processedAt: event.createdAt,
+        });
+      }
     });
 
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
@@ -1755,4 +2050,10 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provide(ProjectionThreadRepositoryLive),
+  Layer.provide(ProviderRuntimeEventReceiptRepositoryLive),
+  Layer.provide(ProjectionThreadMessageRepositoryLive),
+  Layer.provide(ProjectionThreadActivityRepositoryLive),
+);

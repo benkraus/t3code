@@ -16,6 +16,8 @@ import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
+import { ProviderRuntimeEventReceiptRepositoryLive } from "./persistence/Layers/ProviderRuntimeEventReceipts.ts";
+import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
@@ -183,7 +185,10 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
 );
 
-const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
+const PersistenceLayerLive = Layer.mergeAll(
+  ProviderRuntimeEventReceiptRepositoryLive,
+  ProjectionTurnRepositoryLive,
+).pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
 
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
