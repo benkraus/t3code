@@ -5725,6 +5725,38 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           updatedAt: "2026-01-01T00:00:01.000Z",
         },
       } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
+      const messageRemovedEvent = {
+        sequence: 3,
+        eventId: EventId.make("event-message-removed"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.message-removed",
+        payload: {
+          threadId: defaultThreadId,
+          messageId: MessageId.make("message-1"),
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.message-removed" }>;
+      const activityRemovedEvent = {
+        sequence: 4,
+        eventId: EventId.make("event-activity-removed"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: "2026-01-01T00:00:03.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.activity-removed",
+        payload: {
+          threadId: defaultThreadId,
+          activityId: EventId.make("activity-1"),
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.activity-removed" }>;
 
       yield* buildAppUnderTest({
         layers: {
@@ -5736,6 +5768,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               Effect.gen(function* () {
                 yield* Effect.sleep("25 millis");
                 yield* PubSub.publish(liveEvents, messageEvent);
+                yield* PubSub.publish(liveEvents, messageRemovedEvent);
+                yield* PubSub.publish(liveEvents, activityRemovedEvent);
                 return Option.some({ snapshotSequence: 1, thread });
               }),
           },
@@ -5747,13 +5781,21 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
-          }).pipe(Stream.take(2), Stream.runCollect),
+          }).pipe(Stream.take(4), Stream.runCollect),
         ),
       ).pipe(Effect.timeout("2 seconds"));
 
       assert.equal(items[0]?.kind, "snapshot");
       assert.equal(items[1]?.kind, "event");
       assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 2);
+      assert.equal(items[2]?.kind, "event");
+      assert.equal(items[2]?.kind === "event" ? items[2].event.sequence : null, 3);
+      assert.equal(items[3]?.kind, "event");
+      assert.equal(items[3]?.kind === "event" ? items[3].event.sequence : null, 4);
+      assert.equal(
+        items[3]?.kind === "event" ? items[3].event.type : null,
+        "thread.activity-removed",
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 

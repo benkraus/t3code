@@ -34,6 +34,19 @@ export const ProjectionThreadMessage = Schema.Struct({
 });
 export type ProjectionThreadMessage = typeof ProjectionThreadMessage.Type;
 
+export const ProjectionThreadUserMessageTimestamp = Schema.Struct({
+  messageId: MessageId,
+  text: Schema.String,
+  createdAt: IsoDateTime,
+});
+export type ProjectionThreadUserMessageTimestamp = typeof ProjectionThreadUserMessageTimestamp.Type;
+
+export const ProjectionThreadUserMessageRevision = Schema.Struct({
+  messageCount: Schema.Number,
+  latestUpdatedAt: Schema.NullOr(IsoDateTime),
+});
+export type ProjectionThreadUserMessageRevision = typeof ProjectionThreadUserMessageRevision.Type;
+
 export const ListProjectionThreadMessagesInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -69,6 +82,10 @@ export interface ProjectionThreadMessageRepositoryShape {
     input: GetProjectionThreadMessageInput,
   ) => Effect.Effect<Option.Option<ProjectionThreadMessage>, ProjectionRepositoryError>;
 
+  readonly deleteByMessageId: (
+    input: GetProjectionThreadMessageInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
   /**
    * List projected thread messages for a thread.
    *
@@ -77,6 +94,17 @@ export interface ProjectionThreadMessageRepositoryShape {
   readonly listByThreadId: (
     input: ListProjectionThreadMessagesInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadMessage>, ProjectionRepositoryError>;
+
+  readonly listUserTimestampsByThreadId: (
+    input: ListProjectionThreadMessagesInput,
+  ) => Effect.Effect<
+    ReadonlyArray<ProjectionThreadUserMessageTimestamp>,
+    ProjectionRepositoryError
+  >;
+
+  readonly getUserTimestampRevisionByThreadId: (
+    input: ListProjectionThreadMessagesInput,
+  ) => Effect.Effect<ProjectionThreadUserMessageRevision, ProjectionRepositoryError>;
 
   /**
    * Delete projected thread messages by thread.

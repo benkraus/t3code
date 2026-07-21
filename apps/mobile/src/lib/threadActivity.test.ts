@@ -54,6 +54,135 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
+  it("suppresses assistant messages mirrored by reasoning activities", () => {
+    const turnId = TurnId.make("turn-commentary");
+    const mirroredMessageId = MessageId.make("assistant:herdr-commentary-1");
+    const thread = makeThread({
+      id: ThreadId.make("thread-commentary"),
+      projectId: ProjectId.make("project-1"),
+      title: "Mirrored commentary",
+      latestTurn: {
+        turnId,
+        state: "running",
+        requestedAt: "2026-04-01T00:00:00.000Z",
+        startedAt: "2026-04-01T00:00:01.000Z",
+        completedAt: null,
+        assistantMessageId: null,
+      },
+      messages: [
+        {
+          id: mirroredMessageId,
+          role: "assistant",
+          text: "Inspecting the provider transcript.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:01.000Z",
+          updatedAt: "2026-04-01T00:00:01.000Z",
+        },
+        {
+          id: MessageId.make("assistant-final"),
+          role: "assistant",
+          text: "Finished.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:02.000Z",
+          updatedAt: "2026-04-01T00:00:02.000Z",
+        },
+      ],
+      activities: [
+        makeActivity({
+          id: EventId.make("activity-commentary"),
+          kind: "task.progress",
+          summary: "Reasoning update",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          turnId,
+          payload: {
+            summary: "Inspecting the provider transcript.",
+            detail: "Inspecting the provider transcript.",
+            mirroredMessageId,
+          },
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+
+    expect(feed.map((entry) => entry.type)).toEqual(["activity-group", "message"]);
+    expect(deriveThreadFeedPresentation(feed, thread.latestTurn, new Set())).toMatchObject([
+      {
+        type: "activity-group",
+        activities: [{ id: "activity-commentary", status: null, toolLike: false }],
+      },
+      { type: "message", id: "assistant-final" },
+    ]);
+  });
+
+  it("orders feed entries by instant before applying causal tie-breaks", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-offset-order"),
+      projectId: ProjectId.make("project-1"),
+      title: "Offset ordering",
+      messages: [
+        {
+          id: MessageId.make("assistant-later"),
+          role: "assistant",
+          text: "Later.",
+          turnId: TurnId.make("turn-1"),
+          streaming: false,
+          createdAt: "2026-03-31T23:45:00Z",
+          updatedAt: "2026-03-31T23:45:00Z",
+        },
+      ],
+      activities: [
+        makeActivity({
+          id: EventId.make("activity-earlier"),
+          kind: "task.progress",
+          summary: "Earlier",
+          createdAt: "2026-04-01T00:30:00+01:00",
+          turnId: TurnId.make("turn-1"),
+          payload: { summary: "Earlier" },
+        }),
+      ],
+    });
+
+    expect(buildThreadFeed(thread).map((entry) => entry.type)).toEqual([
+      "activity-group",
+      "message",
+    ]);
+  });
+
+  it("applies paginated activity cutoffs by timestamp instant", () => {
+    const message = {
+      id: MessageId.make("assistant-page-boundary"),
+      role: "assistant" as const,
+      text: "Loaded page boundary.",
+      turnId: TurnId.make("turn-1"),
+      streaming: false,
+      createdAt: "2026-03-31T23:45:00Z",
+      updatedAt: "2026-03-31T23:45:00Z",
+    };
+    const thread = makeThread({
+      id: ThreadId.make("thread-pagination-offset"),
+      projectId: ProjectId.make("project-1"),
+      title: "Pagination offsets",
+      messages: [message],
+      activities: [
+        makeActivity({
+          id: EventId.make("activity-before-page"),
+          kind: "task.progress",
+          summary: "Earlier activity",
+          createdAt: "2026-04-01T00:30:00+01:00",
+          turnId: TurnId.make("turn-1"),
+          payload: { summary: "Earlier activity" },
+        }),
+      ],
+    });
+
+    expect(
+      buildThreadFeed(thread, { loadedMessages: [message] }).map((entry) => entry.type),
+    ).toEqual(["message"]);
+  });
+
   it("keeps historic work entries attributed to their turns", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-1"),

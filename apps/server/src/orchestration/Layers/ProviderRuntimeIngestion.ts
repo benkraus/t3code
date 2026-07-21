@@ -12,7 +12,6 @@ import {
   type ThreadTokenUsageSnapshot,
   TurnId,
   type OrchestrationCheckpointSummary,
-  type OrchestrationProposedPlan,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
@@ -25,7 +24,9 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as TxRef from "effect/TxRef";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { runtimeEventFingerprint } from "../../herdr/codexTranscript.ts";
@@ -63,7 +64,10 @@ const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
+const SOURCE_PROPOSED_PLAN_LOCK_CACHE_CAPACITY = 10_000;
+const SOURCE_PROPOSED_PLAN_LOCK_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
+const PROVIDER_RUNTIME_INGESTION_WORKER_COUNT = 8;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
 type TurnStartRequestedDomainEvent = Extract<
@@ -80,6 +84,18 @@ type RuntimeIngestionInput =
       source: "domain";
       event: TurnStartRequestedDomainEvent;
     };
+
+export function providerRuntimeIngestionWorkerIndex(
+  threadId: ThreadId,
+  workerCount = PROVIDER_RUNTIME_INGESTION_WORKER_COUNT,
+): number {
+  let hash = 2_166_136_261;
+  for (const codePoint of String(threadId)) {
+    hash ^= codePoint.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0) % workerCount;
+}
 
 function toTurnId(value: TurnId | string | undefined): TurnId | undefined {
   return value === undefined ? undefined : TurnId.make(String(value));
@@ -144,23 +160,6 @@ function findMessageById(
     const message = messages[index];
     if (message?.id === messageId) {
       return message;
-    }
-  }
-  return undefined;
-}
-
-function findProposedPlanById(
-  proposedPlans: ReadonlyArray<
-    Pick<OrchestrationProposedPlan, "id" | "createdAt" | "implementedAt" | "implementationThreadId">
-  >,
-  planId: string,
-):
-  | Pick<OrchestrationProposedPlan, "id" | "createdAt" | "implementedAt" | "implementationThreadId">
-  | undefined {
-  for (let index = 0; index < proposedPlans.length; index += 1) {
-    const proposedPlan = proposedPlans[index];
-    if (proposedPlan?.id === planId) {
-      return proposedPlan;
     }
   }
   return undefined;
@@ -307,6 +306,22 @@ function requestKindFromCanonicalRequestType(
     default:
       return undefined;
   }
+}
+
+function mirroredCommentaryMessageId(event: ProviderRuntimeEvent): MessageId | undefined {
+  if (event.type !== "item.completed" || event.payload.itemType !== "reasoning") {
+    return undefined;
+  }
+  const data = event.payload.data;
+  return event.itemId !== undefined &&
+    typeof data === "object" &&
+    data !== null &&
+    "type" in data &&
+    data.type === "agentMessage" &&
+    "phase" in data &&
+    data.phase === "commentary"
+    ? MessageId.make(`assistant:${event.itemId}`)
+    : undefined;
 }
 
 function runtimeEventToActivities(
@@ -625,6 +640,32 @@ function runtimeEventToActivities(
     }
 
     case "item.completed": {
+      if (event.payload.itemType === "reasoning") {
+        const mirroredMessageId = mirroredCommentaryMessageId(event);
+        if (mirroredMessageId === undefined) {
+          return [];
+        }
+        return [
+          {
+            id: event.eventId,
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "task.progress",
+            summary: "Reasoning update",
+            payload: {
+              ...(event.payload.detail
+                ? {
+                    summary: truncateDetail(event.payload.detail, 120),
+                    detail: event.payload.detail,
+                  }
+                : {}),
+              mirroredMessageId,
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -674,6 +715,16 @@ function runtimeEventToActivities(
   return [];
 }
 
+function hasMirroredMessageId(activity: { readonly payload: unknown }): boolean {
+  return (
+    typeof activity.payload === "object" &&
+    activity.payload !== null &&
+    "mirroredMessageId" in activity.payload &&
+    typeof (activity.payload as { readonly mirroredMessageId?: unknown }).mirroredMessageId ===
+      "string"
+  );
+}
+
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
@@ -717,6 +768,12 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
   });
 
+  const sourceProposedPlanLocks = yield* Cache.make<string, Semaphore.Semaphore>({
+    capacity: SOURCE_PROPOSED_PLAN_LOCK_CACHE_CAPACITY,
+    timeToLive: SOURCE_PROPOSED_PLAN_LOCK_TTL,
+    lookup: () => Semaphore.make(1),
+  });
+
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
       .getThreadDetailById(threadId, { includeArchived: true })
@@ -728,6 +785,16 @@ const make = Effect.gen(function* () {
       .getThreadShellById(threadId, { includeArchived: true })
       .pipe(Effect.map(Option.getOrUndefined));
   });
+
+  const withSourceProposedPlanLock = <A, E, R>(
+    sourceThreadId: ThreadId,
+    sourcePlanId: string,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    Effect.flatMap(
+      Cache.get(sourceProposedPlanLocks, `${sourceThreadId}:${sourcePlanId}`),
+      (lock) => lock.withPermit(effect),
+    );
 
   const rememberAssistantMessageId = (threadId: ThreadId, turnId: TurnId, messageId: MessageId) =>
     Cache.getOption(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId)).pipe(
@@ -1066,12 +1133,6 @@ const make = Effect.gen(function* () {
   const upsertProposedPlan = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
-    threadProposedPlans: ReadonlyArray<{
-      id: string;
-      createdAt: string;
-      implementedAt: string | null;
-      implementationThreadId: ThreadId | null;
-    }>;
     planId: string;
     turnId?: TurnId;
     planMarkdown: string | undefined;
@@ -1084,33 +1145,36 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      const existingPlan = findProposedPlanById(input.threadProposedPlans, input.planId);
-      yield* orchestrationEngine.dispatch({
-        type: "thread.proposed-plan.upsert",
-        commandId: yield* providerCommandId(input.event, "proposed-plan-upsert"),
-        threadId: input.threadId,
-        proposedPlan: {
-          id: input.planId,
-          turnId: input.turnId ?? null,
-          planMarkdown,
-          implementedAt: existingPlan?.implementedAt ?? null,
-          implementationThreadId: existingPlan?.implementationThreadId ?? null,
-          createdAt: existingPlan?.createdAt ?? input.createdAt,
-          updatedAt: input.updatedAt,
-        },
-        createdAt: input.updatedAt,
-      });
+      yield* withSourceProposedPlanLock(
+        input.threadId,
+        input.planId,
+        Effect.gen(function* () {
+          const currentThread = yield* resolveThreadDetail(input.threadId);
+          const existingPlan = currentThread?.proposedPlans.find(
+            (entry) => entry.id === input.planId,
+          );
+          yield* orchestrationEngine.dispatch({
+            type: "thread.proposed-plan.upsert",
+            commandId: yield* providerCommandId(input.event, "proposed-plan-upsert"),
+            threadId: input.threadId,
+            proposedPlan: {
+              id: input.planId,
+              turnId: input.turnId ?? null,
+              planMarkdown,
+              implementedAt: existingPlan?.implementedAt ?? null,
+              implementationThreadId: existingPlan?.implementationThreadId ?? null,
+              createdAt: existingPlan?.createdAt ?? input.createdAt,
+              updatedAt: input.updatedAt,
+            },
+            createdAt: input.updatedAt,
+          });
+        }),
+      );
     });
 
   const finalizeBufferedProposedPlan = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
-    threadProposedPlans: ReadonlyArray<{
-      id: string;
-      createdAt: string;
-      implementedAt: string | null;
-      implementationThreadId: ThreadId | null;
-    }>;
     planId: string;
     turnId?: TurnId;
     fallbackMarkdown?: string;
@@ -1128,7 +1192,6 @@ const make = Effect.gen(function* () {
       yield* upsertProposedPlan({
         event: input.event,
         threadId: input.threadId,
-        threadProposedPlans: input.threadProposedPlans,
         planId: input.planId,
         ...(input.turnId ? { turnId: input.turnId } : {}),
         planMarkdown,
@@ -1237,27 +1300,33 @@ const make = Effect.gen(function* () {
       implementationThreadId: ThreadId,
       implementedAt: string,
     ) {
-      const sourceThread = yield* resolveThreadDetail(sourceThreadId);
-      const sourcePlan = sourceThread?.proposedPlans.find((entry) => entry.id === sourcePlanId);
-      if (!sourceThread || !sourcePlan || sourcePlan.implementedAt !== null) {
-        return;
-      }
+      yield* withSourceProposedPlanLock(
+        sourceThreadId,
+        sourcePlanId,
+        Effect.gen(function* () {
+          const sourceThread = yield* resolveThreadDetail(sourceThreadId);
+          const sourcePlan = sourceThread?.proposedPlans.find((entry) => entry.id === sourcePlanId);
+          if (!sourceThread || !sourcePlan || sourcePlan.implementedAt !== null) {
+            return;
+          }
 
-      const commandUuid = yield* crypto.randomUUIDv4;
-      yield* orchestrationEngine.dispatch({
-        type: "thread.proposed-plan.upsert",
-        commandId: CommandId.make(
-          `provider:source-proposed-plan-implemented:${implementationThreadId}:${commandUuid}`,
-        ),
-        threadId: sourceThread.id,
-        proposedPlan: {
-          ...sourcePlan,
-          implementedAt,
-          implementationThreadId,
-          updatedAt: implementedAt,
-        },
-        createdAt: implementedAt,
-      });
+          const commandUuid = yield* crypto.randomUUIDv4;
+          yield* orchestrationEngine.dispatch({
+            type: "thread.proposed-plan.upsert",
+            commandId: CommandId.make(
+              `provider:source-proposed-plan-implemented:${implementationThreadId}:${commandUuid}`,
+            ),
+            threadId: sourceThread.id,
+            proposedPlan: {
+              ...sourcePlan,
+              implementedAt,
+              implementationThreadId,
+              updatedAt: implementedAt,
+            },
+            createdAt: implementedAt,
+          });
+        }),
+      );
     },
   );
 
@@ -1416,6 +1485,35 @@ const make = Effect.gen(function* () {
             }
           }
         }
+      }
+
+      const legacyCommentaryMessageId = mirroredCommentaryMessageId(event);
+      if (
+        isHerdrSnapshotEvent &&
+        event.type === "item.completed" &&
+        legacyCommentaryMessageId === undefined
+      ) {
+        const existingActivity = yield* projectionThreadActivities.getByActivityId({
+          activityId: event.eventId,
+        });
+        if (Option.exists(existingActivity, hasMirroredMessageId)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.remove",
+            commandId: yield* providerCommandId(event, "commentary-activity-remove"),
+            threadId: thread.id,
+            activityId: event.eventId,
+            createdAt: event.createdAt,
+          });
+        }
+      }
+      if (legacyCommentaryMessageId !== undefined) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.remove",
+          commandId: yield* providerCommandId(event, "commentary-message-remove"),
+          threadId: thread.id,
+          messageId: legacyCommentaryMessageId,
+          createdAt: event.createdAt,
+        });
       }
 
       const now = event.createdAt;
@@ -1844,11 +1942,9 @@ const make = Effect.gen(function* () {
       }
 
       if (proposedPlanCompletion) {
-        const detailedThread = yield* getLoadedThreadDetail();
         yield* finalizeBufferedProposedPlan({
           event,
           threadId: thread.id,
-          threadProposedPlans: detailedThread?.proposedPlans ?? [],
           planId: proposedPlanCompletion.planId,
           ...(proposedPlanCompletion.turnId ? { turnId: proposedPlanCompletion.turnId } : {}),
           fallbackMarkdown: proposedPlanCompletion.planMarkdown,
@@ -1859,7 +1955,6 @@ const make = Effect.gen(function* () {
       if (event.type === "turn.completed") {
         const detailedThread = yield* getLoadedThreadDetail();
         const messages = detailedThread?.messages ?? [];
-        const proposedPlans = detailedThread?.proposedPlans ?? [];
         const turnId = toTurnId(event.turnId);
         if (turnId) {
           const assistantMessageIds = yield* getAssistantMessageIdsForTurn(thread.id, turnId);
@@ -1884,7 +1979,6 @@ const make = Effect.gen(function* () {
           yield* finalizeBufferedProposedPlan({
             event,
             threadId: thread.id,
-            threadProposedPlans: proposedPlans,
             planId: proposedPlanIdForTurn(thread.id, turnId),
             turnId,
             updatedAt: now,
@@ -2022,13 +2116,38 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processInputSafely);
+  const outstanding = yield* TxRef.make(0);
+  const decrementOutstanding = TxRef.update(outstanding, (count) => count - 1).pipe(Effect.tx);
+  const workers = yield* Effect.all(
+    Array.from({ length: PROVIDER_RUNTIME_INGESTION_WORKER_COUNT }, () =>
+      makeDrainableWorker((input: RuntimeIngestionInput) =>
+        Effect.ensuring(processInputSafely(input), decrementOutstanding),
+      ),
+    ),
+  );
+  const enqueue = (input: RuntimeIngestionInput) => {
+    const threadId =
+      input.source === "runtime"
+        ? input.event.threadId
+        : ThreadId.make(String(input.event.aggregateId));
+    const worker = workers[providerRuntimeIngestionWorkerIndex(threadId, workers.length)]!;
+    return Effect.uninterruptible(
+      TxRef.update(outstanding, (count) => count + 1).pipe(
+        Effect.tx,
+        Effect.andThen(worker.enqueue(input)),
+      ),
+    );
+  };
+  const drain = TxRef.get(outstanding).pipe(
+    Effect.tap((count) => (count > 0 ? Effect.txRetry : Effect.void)),
+    Effect.tx,
+  );
 
   const start: ProviderRuntimeIngestionShape["start"] = () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(
         Stream.runForEach(providerService.streamEvents, (event) =>
-          worker.enqueue({ source: "runtime", event }),
+          enqueue({ source: "runtime", event }),
         ),
       );
       yield* Effect.forkScoped(
@@ -2036,14 +2155,14 @@ const make = Effect.gen(function* () {
           if (event.type !== "thread.turn-start-requested") {
             return Effect.void;
           }
-          return worker.enqueue({ source: "domain", event });
+          return enqueue({ source: "domain", event });
         }),
       );
     });
 
   return {
     start,
-    drain: worker.drain,
+    drain,
   } satisfies ProviderRuntimeIngestionShape;
 });
 

@@ -9,6 +9,7 @@ import {
   type ProviderRuntimeEvent,
   type ThreadId,
 } from "@t3tools/contracts";
+import { maxIsoDateTime } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import type * as CodexSchema from "effect-codex-app-server/schema";
@@ -235,6 +236,20 @@ function turnCompletedAt(
   });
 }
 
+function causalEventCreatedAt(preferred: string, previous: string | undefined): string {
+  if (previous === undefined) return preferred;
+  const preferredDateTime = DateTime.make(preferred);
+  const previousDateTime = DateTime.make(previous);
+  if (
+    Option.isNone(preferredDateTime) ||
+    Option.isNone(previousDateTime) ||
+    DateTime.toEpochMillis(preferredDateTime.value) > DateTime.toEpochMillis(previousDateTime.value)
+  ) {
+    return preferred;
+  }
+  return DateTime.formatIso(DateTime.add(previousDateTime.value, { milliseconds: 1 }));
+}
+
 function eventId(
   canonicalThreadId: ThreadId,
   sessionId: string,
@@ -252,7 +267,7 @@ function runtimeItemId(
   return RuntimeItemId.make(`herdr-codex:${canonicalThreadId}:${sessionId}:${itemId}`);
 }
 
-function userMessageText(item: Extract<CodexItem, { type: "userMessage" }>): string {
+export function codexUserMessageText(item: Extract<CodexItem, { type: "userMessage" }>): string {
   return item.content
     .map((content) => {
       switch (content.type) {
@@ -312,7 +327,7 @@ function itemEvent(input: {
 
   switch (item.type) {
     case "userMessage": {
-      const detail = userMessageText(item).trim();
+      const detail = codexUserMessageText(item).trim();
       return detail.length > 0
         ? {
             ...base,
@@ -327,7 +342,12 @@ function itemEvent(input: {
         ? {
             ...base,
             type: "item.completed",
-            payload: { itemType: "assistant_message", status: "completed", detail, data: item },
+            payload: {
+              itemType: item.phase === "commentary" ? "reasoning" : "assistant_message",
+              status: "completed",
+              detail,
+              data: item,
+            },
           }
         : null;
     }
@@ -519,11 +539,13 @@ export function codexThreadRuntimeEvents(input: {
   readonly externallyActiveTurnId?: TurnId;
   readonly fallbackStartedAtByTurnId?: ReadonlyMap<string, string>;
   readonly fallbackCompletedAtByTurnId?: ReadonlyMap<string, string>;
+  readonly userMessageCreatedAtByItemId?: ReadonlyMap<string, string>;
 }): ReadonlyArray<ProviderRuntimeEvent> {
   const events: ProviderRuntimeEvent[] = [];
   const threadCreatedAt = isoFromUnixSeconds(input.thread.createdAt, input.observedAt);
   const latestTurnIndex = input.thread.turns.length - 1;
   let previousTurnCreatedAt: string | undefined;
+  let previousEventCreatedAt: string | undefined;
   for (let turnIndex = 0; turnIndex <= latestTurnIndex; turnIndex += 1) {
     const turn = input.thread.turns[turnIndex]!;
     const isLatestTurn = turnIndex === latestTurnIndex;
@@ -533,12 +555,15 @@ export function codexThreadRuntimeEvents(input: {
       input.externallyActiveTurnId === turn.id &&
       turn.completedAt == null;
     const isTerminalTurn = turn.status !== "inProgress" && !isExternallyActiveTurn;
-    const createdAt = turnCreatedAt(
-      turn.startedAt,
-      input.fallbackStartedAtByTurnId?.get(turn.id),
-      threadCreatedAt,
-      turnIndex,
-      previousTurnCreatedAt,
+    const createdAt = causalEventCreatedAt(
+      turnCreatedAt(
+        turn.startedAt,
+        input.fallbackStartedAtByTurnId?.get(turn.id),
+        threadCreatedAt,
+        turnIndex,
+        previousTurnCreatedAt,
+      ),
+      previousEventCreatedAt,
     );
     previousTurnCreatedAt = createdAt;
     const canonicalTurnId = TurnId.make(turn.id);
@@ -554,26 +579,38 @@ export function codexThreadRuntimeEvents(input: {
       providerRefs: { providerTurnId: turn.id },
       raw: turnLifecycleRaw(turn, isTerminalTurn),
     });
+    previousEventCreatedAt = createdAt;
 
     for (const item of turn.items) {
-      const event = itemEvent({ ...input, turn, item, createdAt });
-      if (event) events.push(event);
+      const projectedUserCreatedAt =
+        item.type === "userMessage" ? input.userMessageCreatedAtByItemId?.get(item.id) : undefined;
+      const itemCreatedAt =
+        projectedUserCreatedAt ?? causalEventCreatedAt(createdAt, previousEventCreatedAt);
+      const event = itemEvent({ ...input, turn, item, createdAt: itemCreatedAt });
+      if (event) {
+        events.push(event);
+        previousEventCreatedAt = maxIsoDateTime(previousEventCreatedAt, itemCreatedAt);
+      }
     }
 
     if (isTerminalTurn) {
-      events.push({
-        eventId: eventId(input.canonicalThreadId, input.sessionId, turn.id, "turn:completed"),
-        provider: HERDR_DRIVER,
-        providerInstanceId: input.instanceId,
-        threadId: input.canonicalThreadId,
-        turnId: canonicalTurnId,
-        createdAt: turnCompletedAt(
+      const completedAt = causalEventCreatedAt(
+        turnCompletedAt(
           turn,
           createdAt,
           input.thread,
           turnIndex,
           input.fallbackCompletedAtByTurnId?.get(turn.id),
         ),
+        previousEventCreatedAt,
+      );
+      events.push({
+        eventId: eventId(input.canonicalThreadId, input.sessionId, turn.id, "turn:completed"),
+        provider: HERDR_DRIVER,
+        providerInstanceId: input.instanceId,
+        threadId: input.canonicalThreadId,
+        turnId: canonicalTurnId,
+        createdAt: completedAt,
         type: "turn.completed",
         payload: {
           state: turnState(turn.status),
@@ -582,6 +619,7 @@ export function codexThreadRuntimeEvents(input: {
         providerRefs: { providerTurnId: turn.id },
         raw: turnLifecycleRaw(turn, true),
       });
+      previousEventCreatedAt = completedAt;
     }
   }
   return events;

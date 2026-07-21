@@ -50,7 +50,9 @@ import type { ProviderInstance } from "../ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../Services/ProviderRegistry.ts";
 import { ProviderRuntimeEventReceiptRepository } from "../../persistence/Services/ProviderRuntimeEventReceipts.ts";
+import { HerdrCodexThreadBindingRepository } from "../../persistence/Services/HerdrCodexThreadBindings.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
+import { ProjectionThreadMessageRepository } from "../../persistence/Services/ProjectionThreadMessages.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
@@ -85,6 +87,14 @@ const EmptyProviderRuntimeEventReceiptRepositoryLive = Layer.succeed(
   }),
 );
 
+const EmptyHerdrCodexThreadBindingRepositoryLive = Layer.succeed(
+  HerdrCodexThreadBindingRepository,
+  HerdrCodexThreadBindingRepository.of({
+    getByThreadId: () => Effect.succeed(Option.none()),
+    upsert: () => Effect.void,
+  }),
+);
+
 const EmptyProjectionTurnRepositoryLive = Layer.succeed(
   ProjectionTurnRepository,
   ProjectionTurnRepository.of({
@@ -95,12 +105,29 @@ const EmptyProjectionTurnRepositoryLive = Layer.succeed(
     listByThreadId: () => Effect.succeed([]),
     getByTurnId: () => Effect.succeed(Option.none()),
     clearCheckpointTurnConflict: () => Effect.void,
+    clearAssistantMessageId: () => Effect.void,
+    deleteByThreadId: () => Effect.void,
+  }),
+);
+
+const EmptyProjectionThreadMessageRepositoryLive = Layer.succeed(
+  ProjectionThreadMessageRepository,
+  ProjectionThreadMessageRepository.of({
+    upsert: () => Effect.void,
+    getByMessageId: () => Effect.succeed(Option.none()),
+    deleteByMessageId: () => Effect.void,
+    listByThreadId: () => Effect.succeed([]),
+    listUserTimestampsByThreadId: () => Effect.succeed([]),
+    getUserTimestampRevisionByThreadId: () =>
+      Effect.succeed({ messageCount: 0, latestUpdatedAt: null }),
     deleteByThreadId: () => Effect.void,
   }),
 );
 
 const ProviderInstanceRegistryHydrationTestLive = ProviderInstanceRegistryHydrationLive.pipe(
+  Layer.provide(EmptyHerdrCodexThreadBindingRepositoryLive),
   Layer.provide(EmptyProviderRuntimeEventReceiptRepositoryLive),
+  Layer.provide(EmptyProjectionThreadMessageRepositoryLive),
   Layer.provide(EmptyProjectionTurnRepositoryLive),
 );
 

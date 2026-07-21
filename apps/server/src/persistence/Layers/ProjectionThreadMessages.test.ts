@@ -111,4 +111,50 @@ layer("ProjectionThreadMessageRepository", (it) => {
       assert.deepEqual(rows[0]?.attachments, []);
     }),
   );
+
+  it.effect("includes message identity in the user timestamp query", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-user-timestamps");
+      const messageId = MessageId.make("message-user-timestamps");
+
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "Original prompt",
+        isStreaming: false,
+        createdAt: "2026-02-28T19:20:00.000Z",
+        updatedAt: "2026-02-28T19:20:00.000Z",
+      });
+
+      assert.deepEqual(yield* repository.listUserTimestampsByThreadId({ threadId }), [
+        {
+          messageId,
+          text: "Original prompt",
+          createdAt: "2026-02-28T19:20:00.000Z",
+        },
+      ]);
+      assert.deepEqual(yield* repository.getUserTimestampRevisionByThreadId({ threadId }), {
+        messageCount: 1,
+        latestUpdatedAt: "2026-02-28T19:20:00.000Z",
+      });
+
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "Original prompt",
+        isStreaming: false,
+        createdAt: "2026-02-28T19:20:00.000Z",
+        updatedAt: "2026-02-28T19:20:01.000Z",
+      });
+      assert.deepEqual(yield* repository.getUserTimestampRevisionByThreadId({ threadId }), {
+        messageCount: 1,
+        latestUpdatedAt: "2026-02-28T19:20:01.000Z",
+      });
+    }),
+  );
 });

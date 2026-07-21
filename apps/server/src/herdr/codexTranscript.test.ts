@@ -1,6 +1,14 @@
-import { ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
+import {
+  EventId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+  TurnId,
+  type ProviderRuntimeEvent,
+} from "@t3tools/contracts";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 import { describe, expect, it } from "vite-plus/test";
+import type { HerdrWirePane } from "./HerdrSocketClient.ts";
 
 import {
   advanceCodexTranscriptStabilization,
@@ -16,9 +24,21 @@ import {
 } from "./codexTranscript.ts";
 import {
   codexLatestTurnSnapshotSignature,
+  codexTranscriptSessionId,
+  codexTranscriptReceiptNamespaces,
+  codexTranscriptThreadId,
+  codexTranscriptSnapshotSignature,
+  codexTranscriptUserItemsSignature,
+  mapCodexUserMessageCreatedAt,
+  prioritizeCodexReasoningBackfill,
+  recoverCodexTranscriptEventNamespace,
+  resolveCodexTranscriptEventNamespace,
   resolveHerdrTranscriptStartedAtFallback,
   retainHerdrThreadState,
   retainHerdrTranscriptInFlightState,
+  selectCodexBootstrapThread,
+  selectCodexThreadForPane,
+  shouldProbeReportedCodexThread,
 } from "../provider/Drivers/HerdrDriver.ts";
 
 const thread = {
@@ -66,6 +86,265 @@ const thread = {
   updatedAt: 1_784_400_130,
 } satisfies CodexSchema.V2ThreadReadResponse["thread"];
 
+describe("Codex transcript identity", () => {
+  it("separates resumable thread identity from the legacy event namespace", () => {
+    const forkedThread = {
+      ...thread,
+      id: "forked-thread-id",
+      sessionId: "shared-session-tree-id",
+    } satisfies CodexSchema.V2ThreadReadResponse["thread"];
+
+    expect(codexTranscriptThreadId(forkedThread)).toBe("forked-thread-id");
+    expect(codexTranscriptSessionId(forkedThread)).toBe("shared-session-tree-id");
+    const eventNamespaceId = resolveCodexTranscriptEventNamespace({
+      binding: {
+        threadId: ThreadId.make("herdr-thread-1"),
+        codexThreadId: "previous-fork-id",
+        codexSessionId: "shared-session-tree-id",
+        reportedSessionId: "previous-reported-id",
+        eventNamespaceId: "legacy-reported-id",
+        updatedAt: "2026-07-20T22:00:00.000Z",
+      },
+      reportedSessionId: "new-reported-id",
+      preserveBoundNamespace: true,
+    });
+    expect(eventNamespaceId).toBe("legacy-reported-id");
+    const events = codexThreadRuntimeEvents({
+      instanceId: ProviderInstanceId.make("herdr"),
+      canonicalThreadId: ThreadId.make("herdr-thread-1"),
+      sessionId: eventNamespaceId,
+      thread: forkedThread,
+      observedAt: "2026-07-20T22:00:00.000Z",
+    });
+    expect(events.every((event) => String(event.eventId).includes(":legacy-reported-id:"))).toBe(
+      true,
+    );
+    expect(events.some((event) => String(event.eventId).includes(":forked-thread-id:"))).toBe(
+      false,
+    );
+
+    expect(
+      resolveCodexTranscriptEventNamespace({
+        binding: {
+          threadId: ThreadId.make("herdr-thread-1"),
+          codexThreadId: "previous-fork-id",
+          codexSessionId: "old-session-tree-id",
+          reportedSessionId: "previous-reported-id",
+          eventNamespaceId: "legacy-reported-id",
+          updatedAt: "2026-07-20T22:00:00.000Z",
+        },
+        reportedSessionId: "new-reported-id",
+        preserveBoundNamespace: false,
+      }),
+    ).toBe("new-reported-id");
+
+    const rootThread = {
+      ...thread,
+      id: "root-thread-id",
+      sessionId: "shared-session-tree-id",
+    } satisfies CodexSchema.V2ThreadReadResponse["thread"];
+    expect(selectCodexThreadForPane(forkedThread, rootThread).id).toBe("root-thread-id");
+
+    const newSessionThread = {
+      ...thread,
+      id: "new-root-thread-id",
+      sessionId: "new-session-tree-id",
+    } satisfies CodexSchema.V2ThreadReadResponse["thread"];
+    expect(selectCodexThreadForPane(forkedThread, newSessionThread).id).toBe("new-root-thread-id");
+
+    expect(
+      shouldProbeReportedCodexThread({
+        boundThreadId: "previous-fork-id",
+        recoveredThreadId: "previous-fork-id",
+        reportedSessionId: "new-reported-id",
+      }),
+    ).toBe(true);
+    expect(
+      shouldProbeReportedCodexThread({
+        boundThreadId: "previous-fork-id",
+        recoveredThreadId: "new-reported-id",
+        reportedSessionId: "new-reported-id",
+      }),
+    ).toBe(false);
+  });
+
+  it("recovers the pre-upgrade namespace by matching current transcript receipts", () => {
+    const threadId = ThreadId.make("herdr-thread-1");
+    const recoveredEventNamespaceId = recoverCodexTranscriptEventNamespace({
+      threadId,
+      thread,
+      reportedSessionId: "new-reported-id",
+      receipts: [
+        {
+          provider: ProviderDriverKind.make("herdr"),
+          eventId: EventId.make(
+            "herdr-codex:herdr-thread-1:legacy-reported-id:codex-turn-1:turn:started",
+          ),
+          fingerprint: "started",
+          processedAt: "2026-07-20T22:00:00.000Z",
+        },
+        {
+          provider: ProviderDriverKind.make("herdr"),
+          eventId: EventId.make(
+            "herdr-codex:herdr-thread-1:legacy-reported-id:codex-turn-1:item:assistant-item-1",
+          ),
+          fingerprint: "assistant",
+          processedAt: "2026-07-20T22:00:01.000Z",
+        },
+        {
+          provider: ProviderDriverKind.make("herdr"),
+          eventId: EventId.make(
+            "herdr-codex:herdr-thread-1:new-reported-id:codex-turn-1:turn:completed",
+          ),
+          fingerprint: "partial-current",
+          processedAt: "2026-07-20T22:00:02.000Z",
+        },
+        {
+          provider: ProviderDriverKind.make("herdr"),
+          eventId: EventId.make(
+            "herdr-codex:herdr-thread-1:unrelated-session:old-turn:turn:started",
+          ),
+          fingerprint: "old",
+          processedAt: "2026-07-20T21:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(recoveredEventNamespaceId).toBe("legacy-reported-id");
+    if (recoveredEventNamespaceId === undefined) {
+      throw new Error("Expected the legacy transcript namespace to be recovered.");
+    }
+    expect(
+      resolveCodexTranscriptEventNamespace({
+        binding: undefined,
+        reportedSessionId: "new-reported-id",
+        recoveredEventNamespaceId,
+      }),
+    ).toBe("legacy-reported-id");
+  });
+
+  it("selects a readable bootstrap thread by matching persisted receipt suffixes", () => {
+    const threadId = ThreadId.make("herdr-thread-1");
+    const receipts = [
+      {
+        provider: ProviderDriverKind.make("herdr"),
+        eventId: EventId.make(
+          "herdr-codex:herdr-thread-1:actual-rollout-id:codex-turn-1:turn:started",
+        ),
+        fingerprint: "started",
+        processedAt: "2026-07-20T22:00:00.000Z",
+      },
+      {
+        provider: ProviderDriverKind.make("herdr"),
+        eventId: EventId.make(
+          "herdr-codex:herdr-thread-1:actual-rollout-id:codex-turn-1:item:assistant-item-1",
+        ),
+        fingerprint: "assistant",
+        processedAt: "2026-07-20T22:00:01.000Z",
+      },
+      {
+        provider: ProviderDriverKind.make("herdr"),
+        eventId: EventId.make("herdr-codex:herdr-thread-1:old-id:old-turn:turn:started"),
+        fingerprint: "old",
+        processedAt: "2026-07-20T21:00:00.000Z",
+      },
+    ];
+    expect(codexTranscriptReceiptNamespaces({ threadId, receipts })).toEqual([
+      "actual-rollout-id",
+      "old-id",
+    ]);
+    expect(
+      selectCodexBootstrapThread({
+        threadId,
+        receipts,
+        candidates: [
+          {
+            namespaceId: "old-id",
+            thread: {
+              ...thread,
+              id: "old-id",
+              turns: [{ ...thread.turns[0]!, id: "old-turn" }],
+              updatedAt: thread.updatedAt - 100,
+            },
+          },
+          { namespaceId: "actual-rollout-id", thread },
+        ],
+      })?.id,
+    ).toBe(thread.id);
+    expect(
+      selectCodexBootstrapThread({
+        threadId,
+        receipts,
+        candidates: [{ namespaceId: "unmatched-readable-id", thread }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("changes the user-item cache signature only when transcript prompts change", () => {
+    expect(codexTranscriptUserItemsSignature({ ...thread })).toBe(
+      codexTranscriptUserItemsSignature(thread),
+    );
+    expect(
+      codexTranscriptUserItemsSignature({
+        ...thread,
+        turns: [
+          {
+            ...thread.turns[0]!,
+            items: [
+              ...thread.turns[0]!.items,
+              {
+                type: "userMessage",
+                id: "user-item-2",
+                content: [{ type: "text", text: "Follow-up prompt" }],
+              },
+            ],
+          },
+        ],
+      }),
+    ).not.toBe(codexTranscriptUserItemsSignature(thread));
+    expect(
+      codexTranscriptUserItemsSignature({
+        ...thread,
+        turns: [{ ...thread.turns[0]!, startedAt: thread.turns[0]!.startedAt + 1 }],
+      }),
+    ).not.toBe(codexTranscriptUserItemsSignature(thread));
+  });
+});
+
+describe("prioritizeCodexReasoningBackfill", () => {
+  it("moves changed reasoning from the latest turn ahead of historical replay", () => {
+    const event = (
+      id: string,
+      turnId: string,
+      itemType: "reasoning" | "command_execution",
+    ): ProviderRuntimeEvent => ({
+      eventId: EventId.make(id),
+      provider: ProviderDriverKind.make("herdr"),
+      providerInstanceId: ProviderInstanceId.make("herdr"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make(turnId),
+      createdAt: "2026-07-18T18:41:40.000Z",
+      type: "item.completed",
+      payload: { itemType, status: "completed" },
+    });
+    const historical = event("historical", "turn-old", "reasoning");
+    const tool = event("tool", "turn-current", "command_execution");
+    const current = event("current", "turn-current", "reasoning");
+
+    expect(
+      prioritizeCodexReasoningBackfill({
+        events: [historical, tool, current],
+        durableFingerprints: new Map([
+          ["historical", "old-historical"],
+          ["tool", runtimeEventFingerprint(tool)],
+          ["current", "old-current"],
+        ]),
+        latestTurnId: TurnId.make("turn-current"),
+      }).map((entry) => entry.eventId),
+    ).toEqual(["current", "historical", "tool"]);
+  });
+});
+
 describe("codexThreadRuntimeEvents", () => {
   it("maps persisted Codex turns into deterministic native runtime events", () => {
     const events = codexThreadRuntimeEvents({
@@ -74,6 +353,7 @@ describe("codexThreadRuntimeEvents", () => {
       sessionId: thread.sessionId,
       thread,
       observedAt: "2026-07-18T20:00:00.000Z",
+      userMessageCreatedAtByItemId: new Map([["user-item-1", "2026-07-18T18:41:40.500Z"]]),
     });
 
     expect(events.map((event) => event.type)).toEqual([
@@ -94,10 +374,12 @@ describe("codexThreadRuntimeEvents", () => {
       itemId: "herdr-codex:herdr-thread-1:codex-session-1:user-item-1",
       providerRefs: { providerItemId: "user-item-1" },
       payload: { itemType: "user_message", detail: "Update the parser" },
+      createdAt: "2026-07-18T18:41:40.500Z",
     });
     expect(commandEvent).toMatchObject({
       itemId: "herdr-codex:herdr-thread-1:codex-session-1:command-item-1",
       payload: { itemType: "command_execution", detail: "vp test" },
+      createdAt: "2026-07-18T18:41:40.501Z",
     });
     expect(assistantEvent).toMatchObject({
       itemId: "herdr-codex:herdr-thread-1:codex-session-1:assistant-item-1",
@@ -105,7 +387,16 @@ describe("codexThreadRuntimeEvents", () => {
         itemType: "assistant_message",
         detail: "Implemented.\n\n```ts\nconst parsed = true;\n```",
       },
+      createdAt: "2026-07-18T18:41:40.502Z",
     });
+    expect(events.map((event) => Date.parse(event.createdAt))).toEqual(
+      events.map((event) => Date.parse(event.createdAt)).toSorted((left, right) => left - right),
+    );
+    expect(
+      events.every(
+        (event, index) => index === 0 || event.createdAt !== events[index - 1]?.createdAt,
+      ),
+    ).toBe(true);
     expect(runtimeEventFingerprint(assistantEvent!)).toBe(runtimeEventFingerprint(assistantEvent!));
     expect(
       runtimeEventFingerprint({
@@ -113,6 +404,339 @@ describe("codexThreadRuntimeEvents", () => {
         createdAt: "2026-07-19T10:00:00.000Z",
       }),
     ).not.toBe(runtimeEventFingerprint(assistantEvent!));
+  });
+
+  it("preserves a projected prompt timestamp when the turn starts later", () => {
+    const promptCreatedAt = "2026-07-18T18:40:00.000Z";
+    const events = codexThreadRuntimeEvents({
+      instanceId: ProviderInstanceId.make("herdr"),
+      canonicalThreadId: ThreadId.make("herdr-thread-1"),
+      sessionId: thread.sessionId,
+      thread,
+      observedAt: "2026-07-18T20:00:00.000Z",
+      userMessageCreatedAtByItemId: new Map([["user-item-1", promptCreatedAt]]),
+    });
+
+    const turnStarted = events.find((event) => event.type === "turn.started");
+    const userEvent = events.find((event) => event.providerRefs?.providerItemId === "user-item-1");
+    const commandEvent = events.find(
+      (event) => event.providerRefs?.providerItemId === "command-item-1",
+    );
+
+    expect(userEvent?.createdAt).toBe(promptCreatedAt);
+    expect(Date.parse(userEvent!.createdAt)).toBeLessThan(Date.parse(turnStarted!.createdAt));
+    expect(Date.parse(commandEvent!.createdAt)).toBeGreaterThan(Date.parse(turnStarted!.createdAt));
+  });
+
+  it("aligns transcript prompts and same-turn steers from the latest projected messages", () => {
+    const steeredThread = {
+      ...thread,
+      turns: [
+        {
+          ...thread.turns[0]!,
+          items: [
+            thread.turns[0]!.items[0]!,
+            {
+              type: "userMessage",
+              id: "user-steer-1",
+              content: [{ type: "text", text: "Take a different approach" }],
+            },
+          ],
+        },
+      ],
+    } satisfies CodexSchema.V2ThreadReadResponse["thread"];
+
+    expect(
+      mapCodexUserMessageCreatedAt({
+        thread: steeredThread,
+        projectedUserMessages: [
+          { createdAt: "2026-07-18T18:41:40.500Z", text: "Update the parser" },
+          { createdAt: "2026-07-18T18:41:45.750Z", text: "Take a different approach" },
+        ],
+      }),
+    ).toEqual(
+      new Map([
+        ["user-item-1", "2026-07-18T18:41:40.500Z"],
+        ["user-steer-1", "2026-07-18T18:41:45.750Z"],
+      ]),
+    );
+  });
+
+  it("matches attachment prompts against projected text without image placeholders", () => {
+    const attachmentThread = {
+      ...thread,
+      turns: [
+        {
+          ...thread.turns[0]!,
+          items: [
+            {
+              type: "userMessage",
+              id: "user-with-image",
+              content: [
+                { type: "text", text: "Inspect this" },
+                { type: "localImage", path: "/tmp/example.png" },
+              ],
+            },
+          ],
+        },
+      ],
+    } satisfies CodexSchema.V2ThreadReadResponse["thread"];
+
+    expect(
+      mapCodexUserMessageCreatedAt({
+        thread: attachmentThread,
+        projectedUserMessages: [{ createdAt: "2026-07-18T18:41:40.500Z", text: "Inspect this" }],
+      }),
+    ).toEqual(new Map([["user-with-image", "2026-07-18T18:41:40.500Z"]]));
+  });
+
+  it("preserves matched transcript history while ignoring an unmatched pending message", () => {
+    expect(
+      mapCodexUserMessageCreatedAt({
+        thread,
+        projectedUserMessages: [
+          { createdAt: "2026-07-18T18:41:40.500Z", text: "Update the parser" },
+          { createdAt: "2026-07-18T18:41:45.750Z", text: "Pending follow-up" },
+        ],
+      }),
+    ).toEqual(new Map([["user-item-1", "2026-07-18T18:41:40.500Z"]]));
+  });
+
+  it("does not match an existing steer to a newer pending duplicate", () => {
+    const steeredThread = {
+      ...thread,
+      turns: [
+        {
+          ...thread.turns[0]!,
+          items: [
+            thread.turns[0]!.items[0]!,
+            {
+              type: "userMessage",
+              id: "user-steer-1",
+              content: [{ type: "text", text: "Take a different approach" }],
+            },
+          ],
+        },
+      ],
+    } satisfies CodexSchema.V2ThreadReadResponse["thread"];
+
+    expect(
+      mapCodexUserMessageCreatedAt({
+        thread: steeredThread,
+        projectedUserMessages: [
+          { createdAt: "2026-07-18T18:41:40.500Z", text: "Update the parser" },
+          { createdAt: "2026-07-18T18:41:45.750Z", text: "Take a different approach" },
+          { createdAt: "2026-07-18T18:42:30.000Z", text: "Take a different approach" },
+        ],
+      }),
+    ).toEqual(
+      new Map([
+        ["user-item-1", "2026-07-18T18:41:40.500Z"],
+        ["user-steer-1", "2026-07-18T18:41:45.750Z"],
+      ]),
+    );
+  });
+
+  it("skips failed earlier messages and chooses the closest repeated prompt", () => {
+    expect(
+      mapCodexUserMessageCreatedAt({
+        thread,
+        projectedUserMessages: [
+          { createdAt: "2026-07-18T18:00:00.000Z", text: "Update the parser" },
+          { createdAt: "2026-07-18T18:20:00.000Z", text: "Unmirrored failed prompt" },
+          { createdAt: "2026-07-18T18:41:40.500Z", text: "Update the parser" },
+        ],
+      }),
+    ).toEqual(new Map([["user-item-1", "2026-07-18T18:41:40.500Z"]]));
+  });
+
+  it("ignores legacy transcript-imported duplicates when repairing prompt time", () => {
+    expect(
+      mapCodexUserMessageCreatedAt({
+        thread,
+        projectedUserMessages: [
+          {
+            messageId: "original-prompt",
+            createdAt: "2026-07-18T18:40:00.000Z",
+            text: "Update the parser",
+          },
+          {
+            messageId: "user:herdr-codex:herdr-thread-1:codex-session-1:user-item-1",
+            createdAt: "2026-07-18T18:41:40.001Z",
+            text: "Update the parser",
+          },
+        ],
+      }),
+    ).toEqual(new Map([["user-item-1", "2026-07-18T18:40:00.000Z"]]));
+  });
+
+  it("prefers the pre-start prompt over a matching pending steer", () => {
+    expect(
+      mapCodexUserMessageCreatedAt({
+        thread,
+        projectedTurnPendingMessageIdById: new Map([["codex-turn-1", "original-prompt"]]),
+        projectedUserMessages: [
+          {
+            messageId: "original-prompt",
+            createdAt: "2026-07-18T18:41:39.500Z",
+            text: "Update the parser",
+          },
+          {
+            messageId: "pending-steer",
+            createdAt: "2026-07-18T18:41:40.500Z",
+            text: "Update the parser",
+          },
+        ],
+      }),
+    ).toEqual(new Map([["user-item-1", "2026-07-18T18:41:39.500Z"]]));
+  });
+
+  it("matches structured prompts after normalizing whitespace", () => {
+    const structuredThread = {
+      ...thread,
+      turns: [
+        {
+          ...thread.turns[0]!,
+          items: [
+            {
+              type: "userMessage",
+              id: "structured-user-1",
+              content: [
+                { type: "text", text: "Use" },
+                { type: "skill", name: "codex", path: "/tmp/codex/SKILL.md" },
+                { type: "text", text: "now" },
+              ],
+            },
+          ],
+        },
+      ],
+    } satisfies CodexSchema.V2ThreadReadResponse["thread"];
+
+    expect(
+      mapCodexUserMessageCreatedAt({
+        thread: structuredThread,
+        projectedUserMessages: [{ createdAt: "2026-07-18T18:41:40.500Z", text: "Use $codex now" }],
+      }),
+    ).toEqual(new Map([["structured-user-1", "2026-07-18T18:41:40.500Z"]]));
+  });
+
+  it("uses the newest repeated prompt when turn timing is unavailable", () => {
+    const timestampLessThread = {
+      ...thread,
+      turns: [{ ...thread.turns[0]!, startedAt: null }],
+    } satisfies CodexSchema.V2ThreadReadResponse["thread"];
+
+    expect(
+      mapCodexUserMessageCreatedAt({
+        thread: timestampLessThread,
+        projectedUserMessages: [
+          { createdAt: "2026-07-18T18:00:00.000Z", text: "Update the parser" },
+          { createdAt: "2026-07-18T18:41:40.500Z", text: "Update the parser" },
+        ],
+      }),
+    ).toEqual(new Map([["user-item-1", "2026-07-18T18:41:40.500Z"]]));
+  });
+
+  it("orders projected prompts by timestamp instant before matching", () => {
+    const twoTurnThread = {
+      ...thread,
+      turns: [
+        thread.turns[0]!,
+        {
+          ...thread.turns[0]!,
+          id: "codex-turn-2",
+          startedAt: 1_784_400_200,
+          items: [
+            {
+              type: "userMessage",
+              id: "user-item-2",
+              content: [{ type: "text", text: "Second prompt" }],
+            },
+          ],
+        },
+      ],
+    } satisfies CodexSchema.V2ThreadReadResponse["thread"];
+
+    expect(
+      mapCodexUserMessageCreatedAt({
+        thread: twoTurnThread,
+        projectedUserMessages: [
+          { createdAt: "2026-04-01T00:45:00+01:00", text: "Second prompt" },
+          { createdAt: "2026-03-31T23:30:00Z", text: "Update the parser" },
+        ],
+      }),
+    ).toEqual(
+      new Map([
+        ["user-item-1", "2026-03-31T23:30:00Z"],
+        ["user-item-2", "2026-04-01T00:45:00+01:00"],
+      ]),
+    );
+  });
+
+  it("preserves repeated prompt sequence when timing is unavailable", () => {
+    const repeatedThread = {
+      ...thread,
+      turns: [
+        {
+          ...thread.turns[0]!,
+          startedAt: null,
+          items: [
+            {
+              type: "userMessage",
+              id: "user-a-1",
+              content: [{ type: "text", text: "A" }],
+            },
+            {
+              type: "userMessage",
+              id: "user-b-1",
+              content: [{ type: "text", text: "B" }],
+            },
+            {
+              type: "userMessage",
+              id: "user-a-2",
+              content: [{ type: "text", text: "A" }],
+            },
+          ],
+        },
+      ],
+    } satisfies CodexSchema.V2ThreadReadResponse["thread"];
+
+    expect(
+      mapCodexUserMessageCreatedAt({
+        thread: repeatedThread,
+        projectedUserMessages: [
+          { createdAt: "2026-07-18T18:41:40.100Z", text: "A" },
+          { createdAt: "2026-07-18T18:41:40.200Z", text: "B" },
+          { createdAt: "2026-07-18T18:41:40.300Z", text: "A" },
+        ],
+      }),
+    ).toEqual(
+      new Map([
+        ["user-a-1", "2026-07-18T18:41:40.100Z"],
+        ["user-b-1", "2026-07-18T18:41:40.200Z"],
+        ["user-a-2", "2026-07-18T18:41:40.300Z"],
+      ]),
+    );
+  });
+
+  it("invalidates transcript caching when projected prompt timestamps change", () => {
+    const pane = {
+      agent_status: "done",
+      revision: 1,
+      agent_session: { agent: "codex", kind: "id", value: thread.sessionId },
+    } as HerdrWirePane;
+    const withoutTimestamp = codexTranscriptSnapshotSignature({
+      pane,
+      thread,
+      userMessageCreatedAtByItemId: new Map(),
+    });
+    const withTimestamp = codexTranscriptSnapshotSignature({
+      pane,
+      thread,
+      userMessageCreatedAtByItemId: new Map([["user-item-1", "2026-07-18T18:41:40.500Z"]]),
+    });
+
+    expect(withTimestamp).not.toBe(withoutTimestamp);
   });
 
   it("uses stable timestamp fallbacks and detects later authoritative turn times", () => {
@@ -217,7 +841,9 @@ describe("codexThreadRuntimeEvents", () => {
       fallbackCompletedAtByTurnId: new Map([["codex-turn-1", observedAt]]),
     });
 
-    expect(events.find((event) => event.type === "turn.completed")?.createdAt).toBe(observedAt);
+    expect(events.find((event) => event.type === "turn.completed")?.createdAt).toBe(
+      "2026-07-20T04:00:00.004Z",
+    );
   });
 
   it("keeps a first-observed completion fallback stable across thread metadata updates", () => {
@@ -546,14 +1172,14 @@ describe("codexThreadRuntimeEvents", () => {
     const latestItemEvent = events.findLast((event) => event.type === "item.completed");
     expect(latestItemEvent).toMatchObject({
       turnId: "codex-turn-live",
-      payload: { detail: "Newest commentary." },
+      payload: { itemType: "reasoning", detail: "Newest commentary." },
     });
     expect(
       events.filter((event) => event.turnId === "codex-turn-1" && event.type.startsWith("turn.")),
     ).toHaveLength(2);
     expect(events.at(-1)).toMatchObject({
       turnId: "codex-turn-live",
-      payload: { detail: "Newest commentary." },
+      payload: { itemType: "reasoning", detail: "Newest commentary." },
     });
   });
 
@@ -575,7 +1201,7 @@ describe("codexThreadRuntimeEvents", () => {
     const starts = events.filter((event) => event.type === "turn.started");
 
     expect(starts[0]?.createdAt).toBe("2026-07-18T18:40:00.000Z");
-    expect(starts[1]?.createdAt).toBe("2026-07-18T18:40:00.001Z");
+    expect(starts[1]?.createdAt).toBe("2026-07-18T18:42:10.001Z");
   });
 });
 

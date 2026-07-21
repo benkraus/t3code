@@ -684,6 +684,99 @@ describe("orchestration projector", () => {
     }),
   );
 
+  it.effect("clears checkpoint references when an assistant message is removed", () =>
+    Effect.gen(function* () {
+      const createdAt = "2026-02-23T09:00:00.000Z";
+      const model = createEmptyReadModel(createdAt);
+      const afterCreate = yield* projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-message-removal",
+          occurredAt: createdAt,
+          commandId: "cmd-create-message-removal",
+          payload: {
+            threadId: "thread-message-removal",
+            projectId: "project-1",
+            title: "demo",
+            modelSelection: {
+              provider: ProviderDriverKind.make("herdr"),
+              model: "herdr-managed",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      );
+      const afterCheckpoint = yield* projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.turn-diff-completed",
+          aggregateKind: "thread",
+          aggregateId: "thread-message-removal",
+          occurredAt: "2026-02-23T09:00:01.000Z",
+          commandId: "cmd-checkpoint-message-removal",
+          payload: {
+            threadId: "thread-message-removal",
+            turnId: "turn-message-removal",
+            checkpointTurnCount: 1,
+            checkpointRef: "refs/t3/checkpoints/thread-message-removal/turn/1",
+            status: "ready",
+            files: [],
+            assistantMessageId: "assistant-message-removal",
+            completedAt: "2026-02-23T09:00:01.000Z",
+          },
+        }),
+      );
+      const afterMessage = yield* projectEvent(
+        afterCheckpoint,
+        makeEvent({
+          sequence: 3,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-message-removal",
+          occurredAt: "2026-02-23T09:00:02.000Z",
+          commandId: "cmd-message-removal",
+          payload: {
+            threadId: "thread-message-removal",
+            messageId: "assistant-message-removal",
+            role: "assistant",
+            text: "Legacy commentary",
+            turnId: "turn-message-removal",
+            streaming: false,
+            createdAt: "2026-02-23T09:00:02.000Z",
+            updatedAt: "2026-02-23T09:00:02.000Z",
+          },
+        }),
+      );
+      const afterRemoval = yield* projectEvent(
+        afterMessage,
+        makeEvent({
+          sequence: 4,
+          type: "thread.message-removed",
+          aggregateKind: "thread",
+          aggregateId: "thread-message-removal",
+          occurredAt: "2026-02-23T09:00:03.000Z",
+          commandId: "cmd-remove-message-removal",
+          payload: {
+            threadId: "thread-message-removal",
+            messageId: "assistant-message-removal",
+          },
+        }),
+      );
+
+      expect(afterRemoval.threads[0]?.messages).toEqual([]);
+      expect(afterRemoval.threads[0]?.latestTurn?.assistantMessageId).toBeNull();
+      expect(afterRemoval.threads[0]?.checkpoints[0]?.assistantMessageId).toBeNull();
+    }),
+  );
+
   it.effect("prunes reverted turn messages from in-memory thread snapshot", () =>
     Effect.gen(function* () {
       const createdAt = "2026-02-23T10:00:00.000Z";

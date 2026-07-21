@@ -308,6 +308,105 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("keeps thread freshness monotonic for historical message removals", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-historical-message-removal");
+      const threadId = ThreadId.make("thread-historical-message-removal");
+      const messageId = MessageId.make("message-historical-message-removal");
+      const appendAndProject = <T extends Parameters<typeof eventStore.append>[0]>(event: T) =>
+        eventStore.append(event).pipe(Effect.flatMap(projectionPipeline.projectEvent));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-historical-message-removal-project"),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        occurredAt: "2026-04-01T08:00:00.000Z",
+        commandId: CommandId.make("cmd-historical-message-removal-project"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-historical-message-removal-project"),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "Historical message removal",
+          workspaceRoot: "/tmp/project-historical-message-removal",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-04-01T08:00:00.000Z",
+          updatedAt: "2026-04-01T08:00:00.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-historical-message-removal-thread"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-04-01T08:00:01.000Z",
+        commandId: CommandId.make("cmd-historical-message-removal-thread"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-historical-message-removal-thread"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "Historical message removal",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("herdr"),
+            model: "herdr-managed",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-04-01T08:00:01.000Z",
+          updatedAt: "2026-04-01T08:00:01.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-historical-message-removal-message"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-04-01T08:01:00.000Z",
+        commandId: CommandId.make("cmd-historical-message-removal-message"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-historical-message-removal-message"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId,
+          role: "assistant",
+          text: "Legacy commentary",
+          turnId: TurnId.make("turn-historical-message-removal"),
+          streaming: false,
+          createdAt: "2026-04-01T08:00:10.000Z",
+          updatedAt: "2026-04-01T08:01:00.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.message-removed",
+        eventId: EventId.make("evt-historical-message-removal-remove"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-04-01T08:00:11.000Z",
+        commandId: CommandId.make("cmd-historical-message-removal-remove"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-historical-message-removal-remove"),
+        metadata: {},
+        payload: { threadId, messageId },
+      });
+
+      const rows = yield* sql<{ readonly updatedAt: string }>`
+        SELECT updated_at AS "updatedAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(rows, [{ updatedAt: "2026-04-01T08:01:00.000Z" }]);
+    }),
+  );
+
   it.effect("bootstraps beyond the event store's default read limit", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

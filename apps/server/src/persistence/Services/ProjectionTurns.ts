@@ -106,6 +106,13 @@ export const ClearCheckpointTurnConflictInput = Schema.Struct({
 });
 export type ClearCheckpointTurnConflictInput = typeof ClearCheckpointTurnConflictInput.Type;
 
+export const ClearProjectionTurnAssistantMessageInput = Schema.Struct({
+  threadId: ThreadId,
+  assistantMessageId: MessageId,
+});
+export type ClearProjectionTurnAssistantMessageInput =
+  typeof ClearProjectionTurnAssistantMessageInput.Type;
+
 export interface ProjectionTurnRepositoryShape {
   /**
    * Inserts or updates the canonical row for a concrete `{threadId, turnId}` turn lifecycle state.
@@ -154,6 +161,10 @@ export interface ProjectionTurnRepositoryShape {
    */
   readonly clearCheckpointTurnConflict: (
     input: ClearCheckpointTurnConflictInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  readonly clearAssistantMessageId: (
+    input: ClearProjectionTurnAssistantMessageInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**

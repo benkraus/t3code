@@ -83,6 +83,7 @@ import {
   findLatestProposedPlan,
   deriveWorkLogEntries,
   hasActionableProposedPlan,
+  hasCanonicalHerdrOutputAfterUser,
   isLatestTurnSettled,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
@@ -2218,13 +2219,8 @@ function ChatViewContent(props: ChatViewProps) {
       : null;
   const hasCanonicalHerdrAssistant = useMemo(
     () =>
-      latestHerdrUserMessage !== null &&
-      timelineMessages.some(
-        (message) =>
-          message.role === "assistant" &&
-          message.createdAt.localeCompare(latestHerdrUserMessage.createdAt) >= 0,
-      ),
-    [latestHerdrUserMessage, timelineMessages],
+      hasCanonicalHerdrOutputAfterUser(latestHerdrUserMessage, timelineMessages, workLogEntries),
+    [latestHerdrUserMessage, timelineMessages, workLogEntries],
   );
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
   const draftHeroDockRequested =

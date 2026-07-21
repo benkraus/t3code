@@ -13,15 +13,18 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { ProjectionProjectRepositoryLive } from "./ProjectionProjects.ts";
+import { HerdrCodexThreadBindingRepositoryLive } from "./HerdrCodexThreadBindings.ts";
 import { ProviderRuntimeEventReceiptRepositoryLive } from "./ProviderRuntimeEventReceipts.ts";
 import { ProjectionThreadRepositoryLive } from "./ProjectionThreads.ts";
 import { ProjectionProjectRepository } from "../Services/ProjectionProjects.ts";
+import { HerdrCodexThreadBindingRepository } from "../Services/HerdrCodexThreadBindings.ts";
 import { ProviderRuntimeEventReceiptRepository } from "../Services/ProviderRuntimeEventReceipts.ts";
 import { ProjectionThreadRepository } from "../Services/ProjectionThreads.ts";
 
 const projectionRepositoriesLayer = it.layer(
   Layer.mergeAll(
     ProjectionProjectRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+    HerdrCodexThreadBindingRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     ProviderRuntimeEventReceiptRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     ProjectionThreadRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     SqlitePersistenceMemory,
@@ -186,6 +189,39 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
       yield* receipts.deleteByEventId({ provider, eventId });
 
       assert.isTrue(Option.isNone(yield* receipts.get({ provider, eventId })));
+    }),
+  );
+
+  it.effect("updates a HerdR Codex thread binding by canonical thread", () =>
+    Effect.gen(function* () {
+      const bindings = yield* HerdrCodexThreadBindingRepository;
+      const threadId = ThreadId.make("herdr-thread-binding");
+
+      yield* bindings.upsert({
+        threadId,
+        codexThreadId: "codex-root",
+        codexSessionId: "codex-session-tree",
+        reportedSessionId: "reported-root",
+        eventNamespaceId: "reported-root",
+        updatedAt: "2026-07-20T22:00:00.000Z",
+      });
+      yield* bindings.upsert({
+        threadId,
+        codexThreadId: "codex-fork",
+        codexSessionId: "codex-session-tree",
+        reportedSessionId: "reported-fork",
+        eventNamespaceId: "reported-root",
+        updatedAt: "2026-07-20T22:01:00.000Z",
+      });
+
+      assert.deepEqual(Option.getOrNull(yield* bindings.getByThreadId({ threadId })), {
+        threadId,
+        codexThreadId: "codex-fork",
+        codexSessionId: "codex-session-tree",
+        reportedSessionId: "reported-fork",
+        eventNamespaceId: "reported-root",
+        updatedAt: "2026-07-20T22:01:00.000Z",
+      });
     }),
   );
 });

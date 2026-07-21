@@ -6,17 +6,59 @@ import * as Scope from "effect/Scope";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
+import * as CodexRpc from "effect-codex-app-server/rpc";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexInitializeParams } from "../provider/Layers/CodexProvider.ts";
+import { isRecoverableThreadResumeError } from "../provider/Layers/CodexSessionRuntime.ts";
 
 const FORCE_KILL_AFTER = "2 seconds" as const;
 
 export type CodexThreadSnapshot = CodexSchema.V2ThreadReadResponse["thread"];
 
+export interface CodexThreadReaderClient {
+  readonly request: <M extends "thread/read" | "thread/resume">(
+    method: M,
+    payload: CodexRpc.ClientRequestParamsByMethod[M],
+  ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
+}
+
+function isThreadNotLoadedError(error: CodexErrors.CodexAppServerError): boolean {
+  return (
+    error._tag === "CodexAppServerRequestError" &&
+    error.code === -32600 &&
+    error.errorMessage.toLowerCase().includes("thread not loaded")
+  );
+}
+
+const readOrResumeCodexThread = (
+  client: CodexThreadReaderClient,
+  threadId: string,
+): Effect.Effect<CodexThreadSnapshot, CodexErrors.CodexAppServerError> =>
+  client.request("thread/read", { threadId, includeTurns: true }).pipe(
+    Effect.map((response) => response.thread),
+    Effect.catchIf(isThreadNotLoadedError, () =>
+      client.request("thread/resume", { threadId }).pipe(Effect.map((response) => response.thread)),
+    ),
+  );
+
+export const readCodexThread = (
+  client: CodexThreadReaderClient,
+  threadId: string,
+  fallbackThreadId?: string,
+): Effect.Effect<CodexThreadSnapshot, CodexErrors.CodexAppServerError> =>
+  fallbackThreadId === undefined || fallbackThreadId === threadId
+    ? readOrResumeCodexThread(client, threadId)
+    : readOrResumeCodexThread(client, threadId).pipe(
+        Effect.catchIf(isRecoverableThreadResumeError, () =>
+          readOrResumeCodexThread(client, fallbackThreadId),
+        ),
+      );
+
 export interface CodexThreadReader {
   readonly readThread: (
     threadId: string,
+    fallbackThreadId?: string,
   ) => Effect.Effect<CodexThreadSnapshot, CodexErrors.CodexAppServerError>;
 }
 
@@ -70,9 +112,6 @@ export const makeCodexThreadReader = Effect.fn("Herdr.makeCodexThreadReader")(fu
   yield* client.notify("initialized", undefined);
 
   return {
-    readThread: (threadId) =>
-      client
-        .request("thread/read", { threadId, includeTurns: true })
-        .pipe(Effect.map((response) => response.thread)),
+    readThread: (threadId, fallbackThreadId) => readCodexThread(client, threadId, fallbackThreadId),
   };
 });

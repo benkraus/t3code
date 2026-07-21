@@ -3,6 +3,7 @@ import * as Arr from "effect/Array";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
+  MessageId,
   type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
@@ -64,6 +65,7 @@ export interface WorkLogEntry {
   id: string;
   createdAt: string;
   turnId?: TurnId | null;
+  mirroredMessageId?: MessageId;
   label: string;
   detail?: string;
   command?: string;
@@ -140,7 +142,10 @@ export type TimelineEntry =
     };
 
 export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
-  if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") {
+  if (entry.tone === "thinking") {
+    return false;
+  }
+  if (entry.tone === "tool" || entry.tone === "error") {
     return true;
   }
   if (entry.command !== undefined && entry.command.trim().length > 0) {
@@ -250,6 +255,9 @@ export function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
 
 /** Tool-like row with neither clear success nor failure (empty, incomplete, in progress, etc.). */
 export function workEntryIndicatesToolNeutralStatus(entry: WorkLogEntry): boolean {
+  if (entry.tone === "thinking") {
+    return false;
+  }
   if (!workLogEntryIsToolLike(entry)) {
     return false;
   }
@@ -624,6 +632,32 @@ export function hasActionableProposedPlan(
   return proposedPlan !== null && proposedPlan.implementedAt === null;
 }
 
+export function hasCanonicalHerdrOutputAfterUser(
+  latestUserMessage: ChatMessage | null,
+  messages: ReadonlyArray<ChatMessage>,
+  workEntries: ReadonlyArray<WorkLogEntry>,
+): boolean {
+  if (latestUserMessage === null) {
+    return false;
+  }
+  const isCurrentOutput = (turnId: TurnId | null | undefined, createdAt: string) => {
+    const isAfterLatestUser = Date.parse(createdAt) >= Date.parse(latestUserMessage.createdAt);
+    return latestUserMessage.turnId !== null
+      ? turnId === latestUserMessage.turnId && isAfterLatestUser
+      : isAfterLatestUser;
+  };
+  return (
+    messages.some(
+      (message) =>
+        message.role === "assistant" && isCurrentOutput(message.turnId, message.createdAt),
+    ) ||
+    workEntries.some(
+      (entry) =>
+        entry.mirroredMessageId !== undefined && isCurrentOutput(entry.turnId, entry.createdAt),
+    )
+  );
+}
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
@@ -719,8 +753,15 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   };
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
+  const mirroredMessageId =
+    typeof payload?.mirroredMessageId === "string"
+      ? MessageId.make(payload.mirroredMessageId)
+      : undefined;
   if (detail) {
     entry.detail = detail;
+  }
+  if (mirroredMessageId) {
+    entry.mirroredMessageId = mirroredMessageId;
   }
   if (commandPreview.command) {
     entry.command = commandPreview.command;
@@ -1342,12 +1383,19 @@ export function deriveTimelineEntries(
   proposedPlans: ReadonlyArray<ProposedPlan>,
   workEntries: ReadonlyArray<WorkLogEntry>,
 ): TimelineEntry[] {
-  const messageRows: TimelineEntry[] = messages.map((message) => ({
-    id: message.id,
-    kind: "message",
-    createdAt: message.createdAt,
-    message,
-  }));
+  const mirroredMessageIds = new Set(
+    workEntries.flatMap((entry) =>
+      entry.mirroredMessageId === undefined ? [] : [entry.mirroredMessageId],
+    ),
+  );
+  const messageRows: TimelineEntry[] = messages
+    .filter((message) => !mirroredMessageIds.has(message.id))
+    .map((message) => ({
+      id: message.id,
+      kind: "message",
+      createdAt: message.createdAt,
+      message,
+    }));
   const proposedPlanRows: TimelineEntry[] = proposedPlans.map((proposedPlan) => ({
     id: proposedPlan.id,
     kind: "proposed-plan",
@@ -1360,9 +1408,13 @@ export function deriveTimelineEntries(
     createdAt: entry.createdAt,
     entry,
   }));
-  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
-  );
+  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((left, right) => {
+    const leftTime = Date.parse(left.createdAt);
+    const rightTime = Date.parse(right.createdAt);
+    return Number.isFinite(leftTime) && Number.isFinite(rightTime)
+      ? leftTime - rightTime
+      : left.createdAt.localeCompare(right.createdAt);
+  });
 }
 
 export function inferCheckpointTurnCountByTurnId(

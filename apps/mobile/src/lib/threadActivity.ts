@@ -1,4 +1,4 @@
-import { ApprovalRequestId, isToolLifecycleItemType } from "@t3tools/contracts";
+import { ApprovalRequestId, isToolLifecycleItemType, MessageId } from "@t3tools/contracts";
 import type {
   OrchestrationLatestTurn,
   OrchestrationThread,
@@ -63,6 +63,7 @@ interface WorkLogEntry {
   id: string;
   createdAt: string;
   turnId: TurnId | null;
+  mirroredMessageId?: MessageId;
   label: string;
   detail?: string;
   command?: string;
@@ -293,6 +294,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   };
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
+  const mirroredMessageId =
+    typeof payload?.mirroredMessageId === "string"
+      ? MessageId.make(payload.mirroredMessageId)
+      : undefined;
   if (
     !taskDetailAsLabel &&
     payload &&
@@ -327,6 +332,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (requestKind) {
     entry.requestKind = requestKind;
+  }
+  if (mirroredMessageId) {
+    entry.mirroredMessageId = mirroredMessageId;
   }
   let toolLifecycleStatus = extractWorkLogToolLifecycleStatus(payload);
   if (!toolLifecycleStatus && activity.kind === "tool.completed") {
@@ -432,7 +440,10 @@ function normalizeCompactToolLabel(value: string): string {
 }
 
 function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
-  if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") {
+  if (entry.tone === "thinking") {
+    return false;
+  }
+  if (entry.tone === "tool" || entry.tone === "error") {
     return true;
   }
   if (entry.command !== undefined && entry.command.trim().length > 0) {
@@ -491,6 +502,9 @@ function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
 }
 
 function workEntryStatus(entry: WorkLogEntry): ThreadFeedActivity["status"] {
+  if (entry.tone === "thinking") {
+    return null;
+  }
   if (!workLogEntryIsToolLike(entry)) {
     return null;
   }
@@ -1319,22 +1333,29 @@ export function buildThreadFeed(
   const oldestLoadedMessageCreatedAt =
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
   const workLogEntries = deriveWorkLogEntries(thread.activities);
+  const mirroredMessageIds = new Set(
+    workLogEntries.flatMap((entry) =>
+      entry.mirroredMessageId === undefined ? [] : [entry.mirroredMessageId],
+    ),
+  );
   const entries = Arr.sortWith(
     [
-      ...loadedMessages.map<RawThreadFeedEntry>((message) => ({
-        type: "message",
-        id: message.id,
-        createdAt: message.createdAt,
-        message,
-      })),
+      ...loadedMessages
+        .filter((message) => !mirroredMessageIds.has(message.id))
+        .map<RawThreadFeedEntry>((message) => ({
+          type: "message",
+          id: message.id,
+          createdAt: message.createdAt,
+          message,
+        })),
       ...workLogEntries
         .filter((entry) => {
           if (options?.loadedMessages === undefined) {
             return true;
           }
-          return (
-            oldestLoadedMessageCreatedAt === null || entry.createdAt >= oldestLoadedMessageCreatedAt
-          );
+          return oldestLoadedMessageCreatedAt === null
+            ? true
+            : Date.parse(entry.createdAt) >= Date.parse(oldestLoadedMessageCreatedAt);
         })
         .map<RawThreadFeedEntry>((entry) => {
           const summary = workEntryHeading(entry);
@@ -1364,7 +1385,7 @@ export function buildThreadFeed(
           };
         }),
     ],
-    (s) => new Date(s.createdAt),
+    (entry) => new Date(entry.createdAt),
     Order.Date,
   );
 

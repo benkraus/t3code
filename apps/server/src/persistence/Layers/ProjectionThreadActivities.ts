@@ -10,6 +10,7 @@ import * as Struct from "effect/Struct";
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
 
 import {
+  DeleteProjectionThreadActivityInput,
   DeleteProjectionThreadActivitiesInput,
   GetProjectionThreadActivityInput,
   ListProjectionThreadActivitiesInput,
@@ -128,6 +129,15 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const deleteProjectionThreadActivityRow = SqlSchema.void({
+    Request: DeleteProjectionThreadActivityInput,
+    execute: ({ activityId }) =>
+      sql`
+        DELETE FROM projection_thread_activities
+        WHERE activity_id = ${activityId}
+      `,
+  });
+
   const upsert: ProjectionThreadActivityRepositoryShape["upsert"] = (row) =>
     upsertProjectionThreadActivityRow(row).pipe(
       Effect.mapError(
@@ -191,9 +201,19 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       ),
     );
 
+  const deleteByActivityId: ProjectionThreadActivityRepositoryShape["deleteByActivityId"] = (
+    input,
+  ) =>
+    deleteProjectionThreadActivityRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadActivityRepository.deleteByActivityId:query"),
+      ),
+    );
+
   return {
     upsert,
     getByActivityId,
+    deleteByActivityId,
     listByThreadId,
     deleteByThreadId,
   } satisfies ProjectionThreadActivityRepositoryShape;

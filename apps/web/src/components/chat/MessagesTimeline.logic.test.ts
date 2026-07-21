@@ -261,6 +261,50 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("keeps thinking work entries visible", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "commentary-1",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:10Z",
+          entry: {
+            id: "commentary-1",
+            createdAt: "2026-01-01T00:00:10Z",
+            turnId: "turn-1" as never,
+            label: "Inspecting the provider transcript.",
+            tone: "thinking",
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "running",
+        startedAt: "2026-01-01T00:00:01Z",
+        completedAt: null,
+      },
+      runningTurnId: "turn-1" as never,
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:01Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "work",
+          groupedEntries: [
+            expect.objectContaining({
+              id: "commentary-1",
+              tone: "thinking",
+            }),
+          ],
+        }),
+      ]),
+    );
+  });
+
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

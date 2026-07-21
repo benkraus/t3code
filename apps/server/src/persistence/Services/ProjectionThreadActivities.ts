@@ -44,6 +44,11 @@ export const GetProjectionThreadActivityInput = Schema.Struct({
 });
 export type GetProjectionThreadActivityInput = typeof GetProjectionThreadActivityInput.Type;
 
+export const DeleteProjectionThreadActivityInput = Schema.Struct({
+  activityId: EventId,
+});
+export type DeleteProjectionThreadActivityInput = typeof DeleteProjectionThreadActivityInput.Type;
+
 export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -67,6 +72,11 @@ export interface ProjectionThreadActivityRepositoryShape {
   readonly getByActivityId: (
     input: GetProjectionThreadActivityInput,
   ) => Effect.Effect<Option.Option<ProjectionThreadActivity>, ProjectionRepositoryError>;
+
+  /** Delete one activity by its canonical runtime event id. */
+  readonly deleteByActivityId: (
+    input: DeleteProjectionThreadActivityInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
    * List projected thread activity rows for a thread.

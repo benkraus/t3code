@@ -15,6 +15,8 @@ import {
   DeleteProjectionThreadMessagesInput,
   ListProjectionThreadMessagesInput,
   ProjectionThreadMessage,
+  ProjectionThreadUserMessageRevision,
+  ProjectionThreadUserMessageTimestamp,
 } from "../Services/ProjectionThreadMessages.ts";
 
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
@@ -137,6 +139,45 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       `,
   });
 
+  const deleteProjectionThreadMessageRow = SqlSchema.void({
+    Request: GetProjectionThreadMessageInput,
+    execute: ({ messageId }) =>
+      sql`
+        DELETE FROM projection_thread_messages
+        WHERE message_id = ${messageId}
+      `,
+  });
+
+  const listProjectionThreadUserMessageTimestampRows = SqlSchema.findAll({
+    Request: ListProjectionThreadMessagesInput,
+    Result: ProjectionThreadUserMessageTimestamp,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          message_id AS "messageId",
+          text,
+          created_at AS "createdAt"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId} AND role = 'user'
+        ORDER BY created_at ASC, message_id ASC
+      `,
+  });
+
+  const getProjectionThreadUserMessageRevisionRow = SqlSchema.findOne({
+    Request: ListProjectionThreadMessagesInput,
+    Result: ProjectionThreadUserMessageRevision,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          COUNT(*) AS "messageCount",
+          MAX(updated_at) AS "latestUpdatedAt"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
+          AND role = 'user'
+          AND message_id NOT LIKE 'user:herdr-codex:%'
+      `,
+  });
+
   const deleteProjectionThreadMessageRows = SqlSchema.void({
     Request: DeleteProjectionThreadMessagesInput,
     execute: ({ threadId }) =>
@@ -167,6 +208,33 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       Effect.map((rows) => rows.map(toProjectionThreadMessage)),
     );
 
+  const deleteByMessageId: ProjectionThreadMessageRepositoryShape["deleteByMessageId"] = (input) =>
+    deleteProjectionThreadMessageRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadMessageRepository.deleteByMessageId:query"),
+      ),
+    );
+
+  const listUserTimestampsByThreadId: ProjectionThreadMessageRepositoryShape["listUserTimestampsByThreadId"] =
+    (input) =>
+      listProjectionThreadUserMessageTimestampRows(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlError(
+            "ProjectionThreadMessageRepository.listUserTimestampsByThreadId:query",
+          ),
+        ),
+      );
+
+  const getUserTimestampRevisionByThreadId: ProjectionThreadMessageRepositoryShape["getUserTimestampRevisionByThreadId"] =
+    (input) =>
+      getProjectionThreadUserMessageRevisionRow(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlError(
+            "ProjectionThreadMessageRepository.getUserTimestampRevisionByThreadId:query",
+          ),
+        ),
+      );
+
   const deleteByThreadId: ProjectionThreadMessageRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadMessageRows(input).pipe(
       Effect.mapError(
@@ -177,7 +245,10 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
   return {
     upsert,
     getByMessageId,
+    deleteByMessageId,
     listByThreadId,
+    listUserTimestampsByThreadId,
+    getUserTimestampRevisionByThreadId,
     deleteByThreadId,
   } satisfies ProjectionThreadMessageRepositoryShape;
 });

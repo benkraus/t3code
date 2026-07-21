@@ -300,6 +300,15 @@ describe("isRecoverableThreadResumeError", () => {
       ),
       true,
     );
+    NodeAssert.equal(
+      isRecoverableThreadResumeError(
+        new CodexErrors.CodexAppServerRequestError({
+          code: -32600,
+          errorMessage: "no rollout found for thread id thread-1",
+        }),
+      ),
+      true,
+    );
   });
 
   it("ignores non-recoverable resume errors", () => {

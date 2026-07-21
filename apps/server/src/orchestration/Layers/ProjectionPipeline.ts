@@ -736,8 +736,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.message-sent":
+        case "thread.message-removed":
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
+        case "thread.activity-removed":
         case "thread.approval-response-requested":
         case "thread.user-input-response-requested": {
           const existingRow = yield* projectionThreadRepository.getById({
@@ -876,6 +878,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.message-removed":
+          yield* projectionThreadMessageRepository.deleteByMessageId({
+            messageId: event.payload.messageId,
+          });
+          return;
+
         case "thread.reverted": {
           const existingRows = yield* projectionThreadMessageRepository.listByThreadId({
             threadId: event.payload.threadId,
@@ -982,6 +990,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { sequence: event.payload.activity.sequence }
               : {}),
             createdAt: event.payload.activity.createdAt,
+          });
+          return;
+
+        case "thread.activity-removed":
+          yield* projectionThreadActivityRepository.deleteByActivityId({
+            activityId: event.payload.activityId,
           });
           return;
 
@@ -1275,6 +1289,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           });
           return;
         }
+
+        case "thread.message-removed":
+          yield* projectionTurnRepository.clearAssistantMessageId({
+            threadId: event.payload.threadId,
+            assistantMessageId: event.payload.messageId,
+          });
+          return;
 
         case "thread.turn-interrupt-requested": {
           if (event.payload.turnId === undefined) {

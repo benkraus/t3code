@@ -16,8 +16,10 @@ import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
+import { HerdrCodexThreadBindingRepositoryLive } from "./persistence/Layers/HerdrCodexThreadBindings.ts";
 import { ProviderRuntimeEventReceiptRepositoryLive } from "./persistence/Layers/ProviderRuntimeEventReceipts.ts";
 import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns.ts";
+import { ProjectionThreadMessageRepositoryLive } from "./persistence/Layers/ProjectionThreadMessages.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
@@ -186,7 +188,9 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
 );
 
 const PersistenceLayerLive = Layer.mergeAll(
+  HerdrCodexThreadBindingRepositoryLive,
   ProviderRuntimeEventReceiptRepositoryLive,
+  ProjectionThreadMessageRepositoryLive,
   ProjectionTurnRepositoryLive,
 ).pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
 

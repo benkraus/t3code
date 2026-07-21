@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import type { ChatMessage } from "./types";
 import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
@@ -17,6 +18,7 @@ import {
   findLatestProposedPlan,
   findSidebarProposedPlan,
   hasActionableProposedPlan,
+  hasCanonicalHerdrOutputAfterUser,
   isLatestTurnSettled,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
@@ -754,6 +756,24 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities);
     expect(entries[0]?.label).toBe("Searching for API endpoints");
+  });
+
+  it("preserves the assistant message id mirrored by a reasoning activity", () => {
+    const mirroredMessageId = MessageId.make("assistant:herdr-commentary-1");
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "task-progress-with-mirror",
+        kind: "task.progress",
+        summary: "Reasoning update",
+        tone: "info",
+        payload: {
+          detail: "Inspecting the provider transcript.",
+          mirroredMessageId,
+        },
+      }),
+    ]);
+
+    expect(entries[0]).toMatchObject({ mirroredMessageId });
   });
 
   it("uses payload detail as label for task.completed and preserves error tone", () => {
@@ -1536,6 +1556,153 @@ describe("deriveTimelineEntries", () => {
         implementationThreadId: null,
       },
     });
+  });
+
+  it("suppresses an assistant message mirrored by a reasoning work entry", () => {
+    const mirroredMessageId = MessageId.make("assistant:herdr-commentary-1");
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: mirroredMessageId,
+          role: "assistant",
+          text: "Inspecting the provider transcript.",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          turnId: TurnId.make("turn-1"),
+          updatedAt: "2026-02-23T00:00:01.000Z",
+          streaming: false,
+        },
+      ],
+      [],
+      [
+        {
+          id: "work-1",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          turnId: TurnId.make("turn-1"),
+          label: "Inspecting the provider transcript.",
+          tone: "thinking",
+          mirroredMessageId,
+        },
+      ],
+    );
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["work"]);
+  });
+
+  it("orders timeline entries by instant across timestamp offsets", () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("assistant-later"),
+          role: "assistant",
+          text: "Later.",
+          createdAt: "2026-03-31T23:45:00Z",
+          turnId: TurnId.make("turn-1"),
+          updatedAt: "2026-03-31T23:45:00Z",
+          streaming: false,
+        },
+      ],
+      [],
+      [
+        {
+          id: "work-earlier",
+          createdAt: "2026-04-01T00:30:00+01:00",
+          turnId: TurnId.make("turn-1"),
+          label: "Earlier.",
+          tone: "thinking",
+        },
+      ],
+    );
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["work", "message"]);
+  });
+});
+
+describe("hasCanonicalHerdrOutputAfterUser", () => {
+  it("recognizes mirrored commentary as canonical output", () => {
+    const user: ChatMessage = {
+      id: MessageId.make("user-1"),
+      role: "user",
+      text: "Investigate this.",
+      createdAt: "2026-02-23T00:00:00.000Z",
+      updatedAt: "2026-02-23T00:00:00.000Z",
+      turnId: TurnId.make("turn-1"),
+      streaming: false,
+    };
+
+    expect(
+      hasCanonicalHerdrOutputAfterUser(
+        user,
+        [user],
+        [
+          {
+            id: "work-commentary",
+            createdAt: "2026-02-23T00:00:01.000Z",
+            turnId: TurnId.make("turn-1"),
+            label: "Inspecting the provider transcript.",
+            tone: "thinking",
+            mirroredMessageId: MessageId.make("assistant:herdr-commentary-1"),
+          },
+        ],
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores mirrored commentary from a previous turn", () => {
+    const user: ChatMessage = {
+      id: MessageId.make("user-2"),
+      role: "user",
+      text: "Continue.",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      updatedAt: "2026-02-23T00:00:01.000Z",
+      turnId: TurnId.make("turn-2"),
+      streaming: false,
+    };
+
+    expect(
+      hasCanonicalHerdrOutputAfterUser(
+        user,
+        [user],
+        [
+          {
+            id: "work-previous-turn",
+            createdAt: user.createdAt,
+            turnId: TurnId.make("turn-1"),
+            label: "Previous turn commentary.",
+            tone: "thinking",
+            mirroredMessageId: MessageId.make("assistant:herdr-commentary-previous"),
+          },
+        ],
+      ),
+    ).toBe(false);
+  });
+
+  it("ignores same-turn commentary emitted before the latest user steer", () => {
+    const user: ChatMessage = {
+      id: MessageId.make("user-steer"),
+      role: "user",
+      text: "Take a different approach.",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      updatedAt: "2026-02-23T00:00:02.000Z",
+      turnId: TurnId.make("turn-1"),
+      streaming: false,
+    };
+
+    expect(
+      hasCanonicalHerdrOutputAfterUser(
+        user,
+        [user],
+        [
+          {
+            id: "work-before-steer",
+            createdAt: "2026-02-23T00:00:01.000Z",
+            turnId: TurnId.make("turn-1"),
+            label: "Earlier commentary.",
+            tone: "thinking",
+            mirroredMessageId: MessageId.make("assistant:herdr-commentary-before-steer"),
+          },
+        ],
+      ),
+    ).toBe(false);
   });
 });
 

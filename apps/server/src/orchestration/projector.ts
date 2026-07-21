@@ -8,14 +8,17 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { isExternalHerdrTurnReopen, maxIsoDateTime } from "@t3tools/shared/orchestrationTiming";
+import { clearCheckpointAssistantMessageReferences } from "@t3tools/shared/orchestrationMessages";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
   MessageSentPayloadSchema,
+  MessageRemovedPayloadSchema,
   ProjectCreatedPayload,
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
   ThreadActivityAppendedPayload,
+  ThreadActivityRemovedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
   ThreadDeletedPayload,
@@ -454,6 +457,35 @@ export function projectEvent(
         };
       });
 
+    case "thread.message-removed":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          MessageRemovedPayloadSchema,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            messages: thread.messages.filter((message) => message.id !== payload.messageId),
+            checkpoints: clearCheckpointAssistantMessageReferences(
+              thread.checkpoints,
+              payload.messageId,
+            ),
+            latestTurn:
+              thread.latestTurn?.assistantMessageId === payload.messageId
+                ? { ...thread.latestTurn, assistantMessageId: null }
+                : thread.latestTurn,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
     case "thread.session-set":
       return Effect.gen(function* () {
         const payload = yield* decodeForEvent(
@@ -725,6 +757,31 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               activities,
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.activity-removed":
+      return decodeForEvent(
+        ThreadActivityRemovedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              activities: thread.activities.filter(
+                (activity) => activity.id !== payload.activityId,
+              ),
               updatedAt: event.occurredAt,
             }),
           };

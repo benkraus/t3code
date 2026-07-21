@@ -49,6 +49,7 @@ import Migration0033 from "./Migrations/033_RepairHerdrMessageIdentities.ts";
 import Migration0034 from "./Migrations/034_ScopeHerdrMessageIdentitiesByThread.ts";
 import Migration0035 from "./Migrations/035_ProviderRuntimeEventReceipts.ts";
 import Migration0036 from "./Migrations/036_ScopeProviderRuntimeEventReceiptsByThread.ts";
+import Migration0037 from "./Migrations/037_HerdrCodexThreadBindings.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -97,6 +98,7 @@ export const migrationEntries = [
   [34, "ScopeHerdrMessageIdentitiesByThread", Migration0034],
   [35, "ProviderRuntimeEventReceipts", Migration0035],
   [36, "ScopeProviderRuntimeEventReceiptsByThread", Migration0036],
+  [37, "HerdrCodexThreadBindings", Migration0037],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

@@ -13,6 +13,7 @@ import type {
   TurnId,
 } from "@t3tools/contracts";
 import { isExternalHerdrTurnReopen, maxIsoDateTime } from "@t3tools/shared/orchestrationTiming";
+import { clearCheckpointAssistantMessageReferences } from "@t3tools/shared/orchestrationMessages";
 
 export type ThreadDetailReducerResult =
   | { readonly kind: "updated"; readonly thread: OrchestrationThread }
@@ -285,6 +286,27 @@ export function applyThreadDetailEvent(
       };
     }
 
+    case "thread.message-removed":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          messages: Arr.filter(
+            thread.messages,
+            (message) => message.id !== event.payload.messageId,
+          ),
+          checkpoints: clearCheckpointAssistantMessageReferences(
+            thread.checkpoints,
+            event.payload.messageId,
+          ),
+          latestTurn:
+            thread.latestTurn?.assistantMessageId === event.payload.messageId
+              ? { ...thread.latestTurn, assistantMessageId: null }
+              : thread.latestTurn,
+          updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
+        },
+      };
+
     // ── Session ─────────────────────────────────────────────────────
     case "thread.session-set": {
       // Leaving the "running" session status is the turn-end signal: settle a
@@ -517,6 +539,19 @@ export function applyThreadDetailEvent(
         thread: {
           ...thread,
           activities,
+          updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
+        },
+      };
+    }
+
+    case "thread.activity-removed": {
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          activities: thread.activities.filter(
+            (activity) => activity.id !== event.payload.activityId,
+          ),
           updatedAt: maxIsoDateTime(thread.updatedAt, event.occurredAt),
         },
       };

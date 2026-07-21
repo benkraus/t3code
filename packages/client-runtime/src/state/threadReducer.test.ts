@@ -459,6 +459,88 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread.message-removed", () => {
+    it("removes the message and clears the latest turn assistant reference", () => {
+      const removedMessageId = MessageId.make("msg-removed");
+      const retainedMessageId = MessageId.make("msg-retained");
+      const threadWithMessages: OrchestrationThread = {
+        ...baseThread,
+        updatedAt: "2026-04-01T07:00:00.000Z",
+        latestTurn: {
+          turnId: TurnId.make("turn-1"),
+          state: "completed",
+          requestedAt: "2026-04-01T06:00:00.000Z",
+          startedAt: "2026-04-01T06:00:00.000Z",
+          completedAt: "2026-04-01T07:00:00.000Z",
+          assistantMessageId: removedMessageId,
+        },
+        messages: [
+          {
+            id: removedMessageId,
+            role: "assistant",
+            text: "Legacy commentary message",
+            turnId: TurnId.make("turn-1"),
+            streaming: false,
+            createdAt: "2026-04-01T06:30:00.000Z",
+            updatedAt: "2026-04-01T06:30:00.000Z",
+          },
+          {
+            id: retainedMessageId,
+            role: "assistant",
+            text: "Final response",
+            turnId: TurnId.make("turn-1"),
+            streaming: false,
+            createdAt: "2026-04-01T07:00:00.000Z",
+            updatedAt: "2026-04-01T07:00:00.000Z",
+          },
+        ],
+        checkpoints: [
+          {
+            turnId: TurnId.make("turn-1"),
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("ref-removed"),
+            status: "ready",
+            files: [],
+            assistantMessageId: removedMessageId,
+            completedAt: "2026-04-01T07:00:00.000Z",
+          },
+          {
+            turnId: TurnId.make("turn-retained"),
+            checkpointTurnCount: 2,
+            checkpointRef: CheckpointRef.make("ref-retained"),
+            status: "ready",
+            files: [],
+            assistantMessageId: retainedMessageId,
+            completedAt: "2026-04-01T07:30:00.000Z",
+          },
+        ],
+      };
+
+      const result = applyThreadDetailEvent(threadWithMessages, {
+        ...baseEventFields,
+        sequence: 10,
+        occurredAt: "2026-04-01T08:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-removed",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: removedMessageId,
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages.map((message) => message.id)).toEqual([retainedMessageId]);
+        expect(result.thread.latestTurn?.assistantMessageId).toBeNull();
+        expect(
+          result.thread.checkpoints.map((checkpoint) => checkpoint.assistantMessageId),
+        ).toEqual([null, retainedMessageId]);
+        expect(result.thread.updatedAt).toBe("2026-04-01T08:00:00.000Z");
+      }
+    });
+  });
+
   describe("thread.session-set", () => {
     it("settles a running latestTurn when the session leaves the running status", () => {
       const threadWithRunningTurn: OrchestrationThread = {
@@ -790,6 +872,45 @@ describe("applyThreadDetailEvent", () => {
       if (result.kind === "updated") {
         expect(result.thread.activities).toHaveLength(130);
         expect(result.thread.activities[0]?.id).toBe("activity-0");
+      }
+    });
+  });
+
+  describe("thread.activity-removed", () => {
+    it("removes an activity from live thread state", () => {
+      const activityId = EventId.make("activity-1");
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          activities: [
+            {
+              id: activityId,
+              tone: "info",
+              kind: "task.progress",
+              summary: "Reasoning update",
+              payload: { mirroredMessageId: "assistant:item-1" },
+              turnId: TurnId.make("turn-1"),
+              createdAt: "2026-04-01T11:00:00.000Z",
+            },
+          ],
+        },
+        {
+          ...baseEventFields,
+          sequence: 13,
+          occurredAt: "2026-04-01T11:01:00.000Z",
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          type: "thread.activity-removed",
+          payload: {
+            threadId: ThreadId.make("thread-1"),
+            activityId,
+          },
+        },
+      );
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.activities).toEqual([]);
       }
     });
   });
