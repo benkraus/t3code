@@ -10,6 +10,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { expandHomePath } from "../pathExpansion.ts";
@@ -100,16 +101,19 @@ export const registerEnvironment = Effect.fn("HerdrEnvironmentRegistry.registerE
   ): Effect.fn.Return<HerdrEnvironment, never, Scope.Scope> {
     const client = new HerdrSocketClient(expandHomePath(settings.socketPath));
     let latestSnapshot: HerdrWireSnapshot | null = null;
+    const refreshSemaphore = yield* Semaphore.make(1);
 
-    const refresh = Effect.tryPromise({
-      try: () => client.snapshot(),
-      catch: (cause) => runtimeError("session.snapshot", cause),
-    }).pipe(
-      Effect.tap((snapshot) =>
-        Effect.sync(() => {
-          latestSnapshot = snapshot;
-          publishUpdate({ instanceId, snapshot });
-        }),
+    const refresh = refreshSemaphore.withPermits(1)(
+      Effect.tryPromise({
+        try: () => client.snapshot(),
+        catch: (cause) => runtimeError("session.snapshot", cause),
+      }).pipe(
+        Effect.tap((snapshot) =>
+          Effect.sync(() => {
+            latestSnapshot = snapshot;
+            publishUpdate({ instanceId, snapshot });
+          }),
+        ),
       ),
     );
 

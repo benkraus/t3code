@@ -1,4 +1,5 @@
 import {
+  CommandId,
   EventId,
   ProjectId,
   ProviderDriverKind,
@@ -14,10 +15,12 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { ProjectionProjectRepositoryLive } from "./ProjectionProjects.ts";
 import { HerdrCodexThreadBindingRepositoryLive } from "./HerdrCodexThreadBindings.ts";
+import { HerdrProjectionVisibilityRepositoryLive } from "./HerdrProjectionVisibility.ts";
 import { ProviderRuntimeEventReceiptRepositoryLive } from "./ProviderRuntimeEventReceipts.ts";
 import { ProjectionThreadRepositoryLive } from "./ProjectionThreads.ts";
 import { ProjectionProjectRepository } from "../Services/ProjectionProjects.ts";
 import { HerdrCodexThreadBindingRepository } from "../Services/HerdrCodexThreadBindings.ts";
+import { HerdrProjectionVisibilityRepository } from "../Services/HerdrProjectionVisibility.ts";
 import { ProviderRuntimeEventReceiptRepository } from "../Services/ProviderRuntimeEventReceipts.ts";
 import { ProjectionThreadRepository } from "../Services/ProjectionThreads.ts";
 
@@ -25,6 +28,7 @@ const projectionRepositoriesLayer = it.layer(
   Layer.mergeAll(
     ProjectionProjectRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     HerdrCodexThreadBindingRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+    HerdrProjectionVisibilityRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     ProviderRuntimeEventReceiptRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     ProjectionThreadRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     SqlitePersistenceMemory,
@@ -222,6 +226,65 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         eventNamespaceId: "reported-root",
         updatedAt: "2026-07-20T22:01:00.000Z",
       });
+    }),
+  );
+
+  it.effect("tracks ownership and recoverable external archive commands", () =>
+    Effect.gen(function* () {
+      const visibility = yield* HerdrProjectionVisibilityRepository;
+      const threadId = ThreadId.make("herdr-thread-auto-archive");
+      const providerInstanceId = ProviderInstanceId.make("herdr");
+      const archiveCommandId = CommandId.make("herdr-thread-archive:1");
+
+      yield* visibility.ensureOwned({
+        threadId,
+        providerInstanceId,
+      });
+      assert.deepEqual(yield* visibility.listByInstanceId({ providerInstanceId }), [
+        {
+          threadId,
+          providerInstanceId,
+          archiveCommandId: null,
+          autoArchivedAt: null,
+        },
+      ]);
+
+      yield* visibility.beginAutoArchive({ threadId, providerInstanceId, archiveCommandId });
+      assert.deepEqual(yield* visibility.listByInstanceId({ providerInstanceId }), [
+        {
+          threadId,
+          providerInstanceId,
+          archiveCommandId,
+          autoArchivedAt: null,
+        },
+      ]);
+
+      yield* visibility.completeAutoArchive({
+        threadId,
+        archiveCommandId,
+        autoArchivedAt: "2026-07-21T20:00:00.000Z",
+      });
+      assert.deepEqual(yield* visibility.listByInstanceId({ providerInstanceId }), [
+        {
+          threadId,
+          providerInstanceId,
+          archiveCommandId,
+          autoArchivedAt: "2026-07-21T20:00:00.000Z",
+        },
+      ]);
+
+      yield* visibility.clearAutoArchive({ threadId });
+      assert.deepEqual(yield* visibility.listByInstanceId({ providerInstanceId }), [
+        {
+          threadId,
+          providerInstanceId,
+          archiveCommandId: null,
+          autoArchivedAt: null,
+        },
+      ]);
+
+      yield* visibility.deleteByThreadId({ threadId });
+      assert.deepEqual(yield* visibility.listByInstanceId({ providerInstanceId }), []);
     }),
   );
 });

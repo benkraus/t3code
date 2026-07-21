@@ -40,7 +40,7 @@ export const HerdrPaneView = memo(function HerdrPaneView({
       <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center">
         <div className="max-w-md space-y-3">
           <TerminalIcon className="mx-auto size-6 text-muted-foreground" />
-          <p className="text-sm text-foreground">HerdR pane unavailable</p>
+          <p className="text-sm text-foreground">External session unavailable</p>
           <p className="text-xs text-muted-foreground">
             {error instanceof Error ? error.message : "The external runtime is disconnected."}
           </p>
@@ -57,7 +57,7 @@ export const HerdrPaneView = memo(function HerdrPaneView({
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-muted-foreground text-sm">
         <LoaderCircleIcon className="size-4 animate-spin" />
-        Connecting to HerdR
+        Connecting to external session
       </div>
     );
   }

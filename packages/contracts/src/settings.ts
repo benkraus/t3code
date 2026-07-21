@@ -361,7 +361,7 @@ export const HerdrSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed("~/.config/herdr/herdr.sock")),
       Schema.annotateKey({
         title: "Socket path",
-        description: "Unix socket exposed by the persistent HerdR server.",
+        description: "Unix socket exposed by the persistent session server.",
         providerSettingsForm: {
           placeholder: "~/.config/herdr/herdr.sock",
           clearWhenEmpty: "omit",
@@ -372,7 +372,7 @@ export const HerdrSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed("codex")),
       Schema.annotateKey({
         title: "Agent name",
-        description: "HerdR agent manifest used when creating a new thread.",
+        description: "Agent manifest used when creating a new thread.",
         providerSettingsForm: { placeholder: "codex", clearWhenEmpty: "omit" },
       }),
     ),
@@ -380,7 +380,7 @@ export const HerdrSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed("codex")),
       Schema.annotateKey({
         title: "Agent command",
-        description: "Command used by HerdR when creating a new agent pane.",
+        description: "Command used when creating a new agent pane.",
         providerSettingsForm: { placeholder: "codex", clearWhenEmpty: "omit" },
       }),
     ),

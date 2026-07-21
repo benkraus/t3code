@@ -548,7 +548,7 @@ function textGenerationUnsupported(operation: string) {
     new TextGenerationError({
       operation,
       detail:
-        "HerdR delegates text generation to the agent process and does not expose it directly.",
+        "The external runtime delegates text generation to the agent process and does not expose it directly.",
     }),
   );
 }
@@ -561,16 +561,31 @@ const herdrTextGeneration: TextGeneration.TextGeneration["Service"] =
     generateThreadTitle: () => textGenerationUnsupported("generateThreadTitle"),
   });
 
+export function herdrProviderDisplayName(displayName: string | undefined): string {
+  const trimmed = displayName?.trim();
+  return !trimmed || trimmed.toLowerCase() === "herdr" ? "Codex" : trimmed;
+}
+
+export function herdrAgentDisplayName(agentName: string): string {
+  const trimmed = agentName.trim();
+  if (!trimmed) return "Agent";
+  if (trimmed.toLowerCase() === "codex") return "Codex";
+  if (trimmed.toLowerCase() === "claude") return "Claude";
+  return trimmed;
+}
+
 export const HerdrDriver: ProviderDriver<HerdrSettings, HerdrDriverEnv> = {
   driverKind: DRIVER_KIND,
   metadata: {
-    displayName: "HerdR",
+    displayName: "External Codex",
     supportsMultipleInstances: true,
   },
   configSchema: HerdrSettings,
   defaultConfig: () => decodeSettings({}),
   create: ({ instanceId, displayName, accentColor, enabled, config }) =>
     Effect.gen(function* () {
+      const providerDisplayName = herdrProviderDisplayName(displayName);
+      const agentDisplayName = herdrAgentDisplayName(config.agentName);
       const environment = yield* HerdrEnvironmentRegistry.registerEnvironment(instanceId, config);
       const crypto = yield* Crypto.Crypto;
       const codexThreadBindings = yield* HerdrCodexThreadBindingRepository;
@@ -1476,14 +1491,14 @@ export const HerdrDriver: ProviderDriver<HerdrSettings, HerdrDriverEnv> = {
             return yield* new ProviderAdapterRequestError({
               provider: DRIVER_KIND,
               method: "agent.send",
-              detail: "HerdR turns require text input.",
+              detail: "External sessions require text input.",
             });
           }
           if ((input.attachments?.length ?? 0) > 0) {
             return yield* new ProviderAdapterRequestError({
               provider: DRIVER_KIND,
               method: "agent.send",
-              detail: "Image attachments are not supported by the HerdR terminal transport yet.",
+              detail: "Image attachments are not supported by the external terminal transport yet.",
             });
           }
           const sessionId = codexSessionId(pane);
@@ -1671,7 +1686,7 @@ export const HerdrDriver: ProviderDriver<HerdrSettings, HerdrDriverEnv> = {
             new ProviderAdapterRequestError({
               provider: DRIVER_KIND,
               method: "thread.rollback",
-              detail: `Rollback is not supported for externally owned HerdR thread '${threadId}'.`,
+              detail: `Rollback is not supported for externally owned thread '${threadId}'.`,
             }),
           ),
         stopAll: () => Effect.void,
@@ -1690,7 +1705,7 @@ export const HerdrDriver: ProviderDriver<HerdrSettings, HerdrDriverEnv> = {
         return {
           instanceId,
           driver: DRIVER_KIND,
-          displayName: displayName ?? "HerdR",
+          displayName: providerDisplayName,
           ...(accentColor ? { accentColor } : {}),
           badgeLabel: "External",
           continuation: { groupKey: `herdr:socket:${environment.socketPath}` },
@@ -1700,14 +1715,16 @@ export const HerdrDriver: ProviderDriver<HerdrSettings, HerdrDriverEnv> = {
           installed: snapshot !== null,
           version: snapshot?.version ?? null,
           status: enabled ? (snapshot ? "ready" : "error") : "disabled",
-          auth: { status: "authenticated", type: "local-socket", label: "HerdR server" },
+          auth: { status: "authenticated", type: "local-socket", label: "Local session server" },
           checkedAt: now,
-          ...(snapshot ? {} : { message: `Cannot reach HerdR at ${environment.socketPath}.` }),
+          ...(snapshot
+            ? {}
+            : { message: `Cannot reach the local session server at ${environment.socketPath}.` }),
           models: [
             {
               slug: MODEL_SLUG,
-              name: "HerdR managed agent",
-              shortName: "HerdR",
+              name: agentDisplayName,
+              shortName: agentDisplayName,
               isCustom: false,
               capabilities: null,
             },
@@ -1740,7 +1757,7 @@ export const HerdrDriver: ProviderDriver<HerdrSettings, HerdrDriverEnv> = {
           driverKind: DRIVER_KIND,
           continuationKey: `herdr:socket:${environment.socketPath}`,
         },
-        displayName,
+        displayName: providerDisplayName,
         accentColor,
         enabled,
         snapshot: providerSnapshot,

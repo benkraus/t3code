@@ -398,17 +398,37 @@ describe("OrchestrationEngine", () => {
       (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")
         ?.archivedAt,
     ).not.toBeNull();
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")
+        ?.archiveCommandId,
+    ).toBe("cmd-thread-archive");
+
+    await expect(
+      system.run(
+        engine.dispatch({
+          type: "thread.unarchive",
+          commandId: CommandId.make("cmd-thread-unarchive-stale"),
+          threadId: ThreadId.make("thread-archive"),
+          expectedArchiveCommandId: CommandId.make("cmd-thread-archive-other"),
+        }),
+      ),
+    ).rejects.toThrow("archive command changed");
 
     await system.run(
       engine.dispatch({
         type: "thread.unarchive",
         commandId: CommandId.make("cmd-thread-unarchive"),
         threadId: ThreadId.make("thread-archive"),
+        expectedArchiveCommandId: CommandId.make("cmd-thread-archive"),
       }),
     );
     expect(
       (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")
         ?.archivedAt,
+    ).toBeNull();
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")
+        ?.archiveCommandId,
     ).toBeNull();
 
     await system.dispose();

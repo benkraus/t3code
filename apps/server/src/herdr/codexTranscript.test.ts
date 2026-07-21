@@ -39,6 +39,8 @@ import {
   selectCodexBootstrapThread,
   selectCodexThreadForPane,
   shouldProbeReportedCodexThread,
+  herdrAgentDisplayName,
+  herdrProviderDisplayName,
 } from "../provider/Drivers/HerdrDriver.ts";
 
 const thread = {
@@ -87,6 +89,16 @@ const thread = {
 } satisfies CodexSchema.V2ThreadReadResponse["thread"];
 
 describe("Codex transcript identity", () => {
+  it("presents the external runtime as Codex instead of HerdR", () => {
+    expect(herdrProviderDisplayName(undefined)).toBe("Codex");
+    expect(herdrProviderDisplayName("HerdR")).toBe("Codex");
+    expect(herdrProviderDisplayName("  HerdR  ")).toBe("Codex");
+    expect(herdrProviderDisplayName("Remote Codex")).toBe("Remote Codex");
+    expect(herdrAgentDisplayName("codex")).toBe("Codex");
+    expect(herdrAgentDisplayName("claude")).toBe("Claude");
+    expect(herdrAgentDisplayName("custom-agent")).toBe("custom-agent");
+  });
+
   it("separates resumable thread identity from the legacy event namespace", () => {
     const forkedThread = {
       ...thread,

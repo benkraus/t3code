@@ -4159,7 +4159,10 @@ function ChatViewContent(props: ChatViewProps) {
     }
     const isHerdrProvider = ctxSelectedProvider === "herdr";
     if (isHerdrProvider && composerImages.length > 0) {
-      setThreadError(activeThread.id, "HerdR terminal sessions do not support image attachments.");
+      setThreadError(
+        activeThread.id,
+        "External terminal sessions do not support image attachments.",
+      );
       return;
     }
     let threadIdForSend = activeThread.id;
@@ -4368,7 +4371,9 @@ function ChatViewContent(props: ChatViewProps) {
           } else if (!projectionResult.value) {
             failure = AsyncResult.failure(
               Cause.fail(
-                new Error("HerdR created the agent, but T3 did not observe its session in time."),
+                new Error(
+                  "The external runtime created the agent, but T3 did not observe its session in time.",
+                ),
               ),
             );
           } else {

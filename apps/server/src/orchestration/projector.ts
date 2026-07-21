@@ -300,6 +300,7 @@ export function projectEvent(
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
             archivedAt: null,
+            archiveCommandId: null,
             deletedAt: null,
             messages: [],
             activities: [],
@@ -335,6 +336,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: payload.archivedAt,
+            archiveCommandId: event.commandId,
             updatedAt: payload.updatedAt,
           }),
         })),
@@ -346,6 +348,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: null,
+            archiveCommandId: null,
             updatedAt: payload.updatedAt,
           }),
         })),

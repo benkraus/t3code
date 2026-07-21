@@ -17,6 +17,7 @@ import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { HerdrCodexThreadBindingRepositoryLive } from "./persistence/Layers/HerdrCodexThreadBindings.ts";
+import { HerdrProjectionVisibilityRepositoryLive } from "./persistence/Layers/HerdrProjectionVisibility.ts";
 import { ProviderRuntimeEventReceiptRepositoryLive } from "./persistence/Layers/ProviderRuntimeEventReceipts.ts";
 import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns.ts";
 import { ProjectionThreadMessageRepositoryLive } from "./persistence/Layers/ProjectionThreadMessages.ts";
@@ -189,6 +190,7 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
 
 const PersistenceLayerLive = Layer.mergeAll(
   HerdrCodexThreadBindingRepositoryLive,
+  HerdrProjectionVisibilityRepositoryLive,
   ProviderRuntimeEventReceiptRepositoryLive,
   ProjectionThreadMessageRepositoryLive,
   ProjectionTurnRepositoryLive,
